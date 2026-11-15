@@ -49,9 +49,10 @@ Then every `git push` triggers `spc review` automatically. Plain commands:
 
 ## Privacy: what leaves your machine
 
-- The **diff** and (optionally, in a later version) **PR history** are sent to the
-  LLM provider configured in `.spc.toml` (`base_url` + `model`). Point `base_url`
-  at a local endpoint (Ollama, LM Studio, vLLM) and nothing leaves your machine.
+- The **diff** and, when GitHub mining is enabled, **PR titles + review-comment
+  snippets** are sent to the LLM provider configured in `.spc.toml` (`base_url`
+  + `model`). Point `base_url` at a local endpoint (Ollama, LM Studio, vLLM)
+  and nothing leaves your machine.
 - A **local regex scan** checks the diff for obvious secrets *before* the LLM call.
   Set `block_on_secrets = true` to skip the LLM call entirely when one is suspected.
 - `.spc/` (profile, evidence) is gitignored; `.spc.toml` is meant to be committed.
@@ -81,10 +82,27 @@ learn_max_commits = 2000   # git history depth to mine
 profile_max_age_days = 30  # staleness notice threshold (never auto-refresh)
 
 [github]
-enabled = "auto"           # reserved for step 2 (GitHub PR/comment mining)
+enabled = "auto"           # "auto" | true | false — mine merged PRs + review
+                           # comments in `spc learn` (token via GITHUB_TOKEN /
+                           # GH_TOKEN / gh auth token; public repos work
+                           # unauthenticated)
+base_url = "https://api.github.com"  # change for GitHub Enterprise
+github_max_prs = 200       # merged-PR cap per mining run
+github_max_comments = 1000 # inline-comment cap per mining run
+github_pages_max = 10      # pagination ceiling per endpoint
 ```
 
 Export your key: `export SPC_API_KEY=sk-...` (any OpenAI-compatible provider).
+
+### GitHub mining (step 2)
+
+If `origin` points at GitHub, `spc learn` also mines **merged PRs and inline
+review comments** and distills recurring peer-review themes ("tests not
+updated", "missing error handling", …) into your profile. Watermark-
+incremental: re-runs fetch only PRs newer than the last run. Rate-limit aware,
+capped per run, and strictly fail-soft — any GitHub error downgrades to
+git-only learning with a one-line notice. Only synthesized **themes** enter
+`.spc/profile.md`; raw comments stay in the gitignored `.spc/evidence.json`.
 
 ## Behavior guarantees
 
@@ -99,11 +117,11 @@ Export your key: `export SPC_API_KEY=sk-...` (any OpenAI-compatible provider).
 
 ## Roadmap
 
-- **v1 (this)**: local harness — git mining + LLM profile + push review
+- **v1 (this)**: local harness — git + GitHub PR/comment mining, LLM profile,
+  push review
 - **v1.1**: npm wrapper (`spiritcuffs`) for `npx` users
 - **v1.5**: feedback marking in `spc history`; doc generation
 - **v2**: calibration engine learning from your accept/dismiss feedback
-- **step 2 (next)**: GitHub PR/review-comment mining → richer profiles
 
 ## Development
 
