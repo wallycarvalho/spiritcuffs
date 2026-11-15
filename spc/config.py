@@ -92,6 +92,17 @@ def _validated(section_name: str, defaults: object, raw: object) -> dict[str, ob
                 file=sys.stderr,
             )
             continue
+        if key == "enabled":
+            normalized = _normalize_enabled(value)
+            if normalized is not None:
+                cleaned[key] = normalized
+                continue
+            print(
+                f"spiritcuffs: ignoring bad value for {section_name}.{key!r} "
+                "(expected \"auto\" | true | false) — using default",
+                file=sys.stderr,
+            )
+            continue
         if not _type_matches(value, defaults_dict[key]):
             print(
                 f"spiritcuffs: ignoring bad value for {section_name}.{key!r} "
@@ -101,6 +112,22 @@ def _validated(section_name: str, defaults: object, raw: object) -> dict[str, ob
             continue
         cleaned[key] = value
     return {**defaults_dict, **cleaned}
+
+
+def _normalize_enabled(value: object) -> str | None:
+    """Normalize ``github.enabled`` spellings to "auto" | "true" | "false".
+
+    TOML booleans are accepted (``enabled = false`` is the intuitive opt-out
+    spelling and must NOT fall back to auto-mining); anything unrecognizable
+    returns None so the caller warns and keeps the default.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("auto", "true", "false", "yes", "no", "1", "0"):
+            return lowered
+    return None
 
 
 def _type_matches(value: object, default: object) -> bool:

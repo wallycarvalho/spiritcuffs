@@ -104,6 +104,17 @@ capped per run, and strictly fail-soft — any GitHub error downgrades to
 git-only learning with a one-line notice. Only synthesized **themes** enter
 `.spc/profile.md`; raw comments stay in the gitignored `.spc/evidence.json`.
 
+### Token safety (GitHub Enterprise)
+
+Your GitHub token is a machine-level credential, but `github.base_url` comes
+from the repo-committed `.spc.toml`. SpiritCuffs therefore attaches the
+`Authorization: Bearer …` header **only** when the API host is
+`api.github.com`, or matches the host of **your own `origin` remote** (your
+GitHub Enterprise instance), and only over **https**. A repo whose config
+points `base_url` at some other host is mined unauthenticated with a one-line
+warning — your token is never sent there. Plain `http://` base URLs never
+receive the token either.
+
 ## Behavior guarantees
 
 - **Fail-soft**: git hiccups, missing profile, or LLM failure never break your

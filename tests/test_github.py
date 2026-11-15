@@ -28,7 +28,12 @@ from spc.githubhistory import (
     detect_github_repo,
     mine_github,
 )
-from spc.profile import evidence_path, load_evidence, load_github_evidence
+from spc.profile import (
+    evidence_path,
+    load_evidence,
+    load_github_evidence,
+    save_github_evidence,
+)
 
 
 @pytest.fixture()
@@ -138,10 +143,18 @@ def _pr(number: int, *, merged: bool = True) -> dict:
     return payload
 
 
-def _mock_client(handler, caps: FetchCaps | None = None, token: str | None = "t") -> GithubClient:
+def _mock_client(
+    handler,
+    caps: FetchCaps | None = None,
+    token: str | None = "t",
+    origin_host: str | None = None,
+) -> GithubClient:
     transport = httpx.MockTransport(handler)
     http_client = httpx.Client(transport=transport)
-    return GithubClient(token, caps or FetchCaps(), client=http_client, sleep_fn=lambda _s: None)
+    return GithubClient(
+        token, caps or FetchCaps(), client=http_client, sleep_fn=lambda _s: None,
+        origin_host=origin_host,
+    )
 
 
 def test_pagination_stops_at_pages_max() -> None:
@@ -294,7 +307,7 @@ def test_watermark_incremental_second_run_fetches_only_newer(git_repo) -> None:
         client_factory=lambda caps: _mock_client(second_handler, caps),
     )
     assert second is not None
-    assert [p.number for p in second.pulls] == [10, 9, 11]  # merged: old + new
+    assert [p.number for p in second.pulls] == [11, 10, 9]  # merged, newest first
     assert second.watermark == 11
     # The client stopped as soon as it walked below the watermark.
     assert second.stats["prs_fetched"] == 1
@@ -533,3 +546,288 @@ def _comment_record(pr_number: int, path: str, body: str):
     from spc.githubhistory import CommentRecord
 
     return CommentRecord(pr_number=pr_number, path=path, body_snippet=body)
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: token pinning, budget stop, token hygiene, skip reasons,
+# theme scrubbing
+# ---------------------------------------------------------------------------
+
+
+def _bearer(request: httpx.Request) -> str | None:
+    auth = request.headers.get("Authorization")
+    return auth
+
+
+def test_token_not_sent_to_untrusted_custom_host(git_repo) -> None:
+    """BLOCKER regression: a repo-committed base_url must not receive the token."""
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("Authorization"))
+        if request.url.path.endswith("/pulls"):
+            return httpx.Response(200, json=[_pr(1)])
+        return httpx.Response(200, json=[])
+
+    repo = git_repo()
+    run_git(repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+    config = SpcConfig(github=GithubConfig(base_url="https://evil.example"))
+    evidence = mine_github(
+        repo, config,
+        client_factory=lambda caps: _mock_client(
+            handler, caps, token="secret", origin_host="github.com"
+        ),
+    )
+    assert evidence is not None  # mining still works, just unauthenticated
+    assert seen
+    assert all(auth is None for auth in seen)
+
+
+def test_token_sent_to_origin_matching_ghe_host(git_repo) -> None:
+    """The user's own origin host (GHE) is a trusted token target."""
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("Authorization"))
+        if request.url.path.endswith("/pulls"):
+            return httpx.Response(200, json=[_pr(1)])
+        return httpx.Response(200, json=[])
+
+    repo = git_repo()
+    run_git(repo, "remote", "add", "origin", "https://ghe.corp/acme/widget.git")
+    # GHE mining is opt-in: the repo's config must declare the API host first.
+    (repo / ".spc.toml").write_text(
+        '[github]\nbase_url = "https://ghe.corp/api/v3"\n', encoding="utf-8"
+    )
+    config = SpcConfig(github=GithubConfig(base_url="https://ghe.corp/api/v3"))
+    evidence = mine_github(
+        repo, config,
+        client_factory=lambda caps: _mock_client(
+            handler, caps, token="secret", origin_host="ghe.corp"
+        ),
+    )
+    assert evidence is not None
+    assert seen
+    assert all(auth == "Bearer secret" for auth in seen)
+
+
+def test_token_not_sent_over_plain_http(git_repo) -> None:
+    """http:// base_url must never receive the Bearer token (cleartext leak)."""
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("Authorization"))
+        if request.url.path.endswith("/pulls"):
+            return httpx.Response(200, json=[_pr(1)])
+        return httpx.Response(200, json=[])
+
+    repo = git_repo()
+    run_git(repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+    config = SpcConfig(github=GithubConfig(base_url="http://ghe.corp/api/v3"))
+    evidence = mine_github(
+        repo, config,
+        client_factory=lambda caps: _mock_client(
+            handler, caps, token="secret", origin_host="github.com"
+        ),
+    )
+    assert evidence is not None
+    assert all(auth is None for auth in seen)
+
+
+def test_token_sent_to_default_api_github_com(git_repo) -> None:
+    repo = git_repo()
+    run_git(repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("Authorization"))
+        if request.url.path.endswith("/pulls"):
+            return httpx.Response(200, json=[_pr(1)])
+        return httpx.Response(200, json=[])
+
+    evidence = mine_github(
+        repo, SpcConfig(),
+        client_factory=lambda caps: _mock_client(
+            handler, caps, token="secret", origin_host="github.com"
+        ),
+    )
+    assert evidence is not None
+    assert all(auth == "Bearer secret" for auth in seen)
+
+
+def test_ssh_origin_host_derived_for_trust(git_repo) -> None:
+    """ssh-form origins (git@host:owner/repo) pin the token to the same host."""
+    repo = git_repo()
+    run_git(repo, "remote", "add", "origin", "git@ghe.corp:acme/widget.git")
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("Authorization"))
+        if request.url.path.endswith("/pulls"):
+            return httpx.Response(200, json=[_pr(1)])
+        return httpx.Response(200, json=[])
+
+    (repo / ".spc.toml").write_text(
+        '[github]\nbase_url = "https://ghe.corp/api/v3"\n', encoding="utf-8"
+    )
+    config = SpcConfig(github=GithubConfig(base_url="https://ghe.corp/api/v3"))
+    evidence = mine_github(
+        repo, config,
+        client_factory=lambda caps: _mock_client(
+            handler, caps, token="secret", origin_host="ghe.corp"
+        ),
+    )
+    assert evidence is not None
+    assert all(auth == "Bearer secret" for auth in seen)
+
+
+def test_budget_exhaustion_keeps_fetched_work(monkeypatch) -> None:
+    """Hitting the API-call ceiling stops gracefully and keeps fetched PRs."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        return httpx.Response(200, json=[_pr(page * 100 + n) for n in range(50)])
+
+    import spc.githubapi as githubapi_module
+
+    monkeypatch.setattr(githubapi_module, "MAX_API_CALLS_PER_RUN", 3)
+    caps = FetchCaps(pages_max=10, max_prs=500)
+    client = _mock_client(handler, caps)
+    pulls = list(client.iter_merged_pulls("o", "r"))
+    assert len(pulls) == 150  # exactly 3 pages before the ceiling tripped
+    assert client.stats.stopped_reason == "budget_exhausted"
+    assert client.stats.prs_fetched == 150
+
+
+def test_mine_github_budget_exhaustion_saves_watermark(git_repo) -> None:
+    """Even a budget-truncated run persists its watermark for the next run."""
+    repo = git_repo()
+    run_git(repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        return httpx.Response(200, json=[_pr(page * 100 + n) for n in range(50)])
+
+    # Tiny budget via monkeypatched constant: first page (1 call) + a few
+    # comment calls, then the ceiling trips mid-walk.
+    monkey_budget = 4
+    import spc.githubapi as githubapi_module
+
+    original = githubapi_module.MAX_API_CALLS_PER_RUN
+    githubapi_module.MAX_API_CALLS_PER_RUN = monkey_budget
+    try:
+        evidence = mine_github(
+            repo, SpcConfig(), client_factory=lambda caps: _mock_client(handler, caps)
+        )
+    finally:
+        githubapi_module.MAX_API_CALLS_PER_RUN = original
+    assert evidence is not None
+    assert evidence.pulls  # kept partial work
+    assert evidence.stats["stopped_reason"] == "budget_exhausted"
+    assert evidence.watermark == max(p.number for p in evidence.pulls)
+
+
+def test_resolve_token_strips_whitespace_and_newlines(monkeypatch) -> None:
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "  tok-123\r\n")
+    assert resolve_token() == "tok-123"
+
+
+def test_resolve_token_whitespace_only_is_none(monkeypatch) -> None:
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", "   \n")
+    monkeypatch.setattr("spc.githubapi.shutil.which", lambda name: None)
+    assert resolve_token() is None
+
+
+def test_remote_host_helper() -> None:
+    from spc.githubapi import remote_host
+
+    assert remote_host("https://github.com/acme/widget.git") == "github.com"
+    assert remote_host("git@ghe.corp:acme/widget.git") == "ghe.corp"
+    assert remote_host("ssh://git@ghe.corp/acme/widget.git") == "ghe.corp"
+    assert remote_host("/local/path") is None
+
+
+def test_learn_skip_notice_reflects_api_error(git_repo, monkeypatch) -> None:
+    """An API failure during mining says so — not the ambiguous no-new-PRs line."""
+    import io
+
+    from spc.learn import _mine_github_source
+
+    repo = git_repo({"src/a.py": "a=1\n"})
+    run_git(repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+    monkeypatch.setenv("GITHUB_TOKEN", "t")
+
+    def fail(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise GithubApiError("HTTP 401: Bad credentials")
+
+    monkeypatch.setattr("spc.githubhistory.mine_github", fail)
+    console = Console(file=io.StringIO(), force_terminal=False)
+    _mine_github_source(repo, SpcConfig(), console)
+    output = console.file.getvalue()  # type: ignore[union-attr]
+    assert "unreachable" in output
+    assert "no new merged PRs since the last run" not in output
+
+
+def test_learn_skip_notice_no_new_prs_when_last_run_was_clean(
+    git_repo, monkeypatch
+) -> None:
+    """A clean previous run + nothing new says 'no new merged PRs'."""
+    import io
+
+    from spc.learn import _skip_reason
+
+    repo = git_repo({"src/a.py": "a=1\n"})
+    run_git(repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+    save_github_evidence(
+        repo,
+        GithubEvidence(
+            owner="acme", repo="widget", watermark=5,
+            stats={"stopped_reason": "complete"},
+        ).to_dict(),
+    )
+    console = Console(file=io.StringIO(), force_terminal=False)
+    reason = _skip_reason(repo, SpcConfig())
+    console.print(reason)
+    assert "no new merged PRs since the last run" in console.file.getvalue()  # type: ignore[union-attr]
+
+
+def test_scrub_drops_lines_quoting_raw_comments() -> None:
+    """PRIVACY defense-in-depth: raw comment text must not enter the profile."""
+    import io
+
+    from spc.learn import _scrub_theme_section
+
+    evidence = GithubEvidence(
+        owner="o",
+        repo="r",
+        pulls=[_pr_record(1, "Refactor the whole authentication subsystem now")],
+        comments=[
+            _comment_record(
+                1, "auth.py", "please add error handling around the token refresh call"
+            )
+        ],
+    )
+    themes = (
+        "- error handling: 3 comments\n"
+        "- please add error handling around the token refresh call\n"
+        "- tests: 2 comments\n"
+    )
+    console = Console(width=200, file=io.StringIO(), force_terminal=False)
+    result = _scrub_theme_section(themes, evidence, console)
+    assert "please add error handling around the token refresh call" not in result
+    assert "- error handling: 3 comments" in result  # synthesized line kept
+    output = console.file.getvalue()  # type: ignore[union-attr]
+    assert "privacy filter" in output
+
+
+def test_scrub_caps_themes_length() -> None:
+    import io
+
+    from spc.learn import MAX_THEMES_CHARS, _scrub_theme_section
+
+    evidence = GithubEvidence(owner="o", repo="r", pulls=[_pr_record(1, "t")])
+    themes = "- theme\n" * 2000
+    console = Console(file=io.StringIO(), force_terminal=False)
+    result = _scrub_theme_section(themes, evidence, console)
+    assert len(result) <= MAX_THEMES_CHARS + len("\n…(truncated)")

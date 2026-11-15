@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from spc import llm
-from spc.config import SpcConfig
+from spc.config import SpcConfig, load_config
 from spc.diff import run_git
 from spc.githubapi import (
     DEFAULT_BASE_URL,
@@ -22,10 +22,11 @@ from spc.githubapi import (
     GithubClient,
     RateLimitedError,
     parse_github_remote,
+    remote_host,
     resolve_token,
-)
+    split_owner_repo_from_path,
+)  # Caps on what enters the ONE theme-clustering LLM call.
 
-# Caps on what enters the ONE theme-clustering LLM call.
 MAX_PRS_IN_PROMPT = 100
 MAX_COMMENTS_IN_PROMPT = 300
 MAX_COMMENT_CHARS = 200
@@ -136,29 +137,44 @@ class GithubEvidence:
 
 
 def detect_github_repo(repo_root: Path) -> tuple[str, str] | None:
-    """Parse the ``origin`` remote into ``(owner, repo)``; None for non-github."""
+    """Parse the ``origin`` remote into ``(owner, repo)``; None for non-github.
+
+    Accepts github.com URLs and GitHub-Enterprise-shaped URLs on any host —
+    an origin the user themselves pointed at a GitHub-like API host. A
+    non-GitHub URL shape (e.g. ``gitlab.com``) is rejected.
+    """
     raw = run_git(repo_root, "remote", "get-url", "origin")
     if not raw:
         return None
-    return parse_github_remote(raw.strip())
+    url = raw.strip()
+    parsed = parse_github_remote(url)
+    if parsed is not None:
+        return parsed
+    # GHE: GitHub-style path on a custom host that matches github.base_url's
+    # host. Path shape must still be GitHub-like (owner/repo).
+    base_host = remote_host(str(load_config(repo_root).github.base_url))
+    origin_host = remote_host(url)
+    if (
+        origin_host
+        and base_host
+        and origin_host == base_host
+        and base_host != "github.com"
+    ):
+        return split_owner_repo_from_path(url)
+    return None
 
 
 def decide_mining(config: SpcConfig) -> str:
-    """Resolve ``github.enabled`` to "mine" | "skip" | "off".
+    """Resolve ``github.enabled`` to "off" | "mine".
 
-    "off": enabled=false — never touch the network. "skip": auto mode and no
-    credentials found. "mine": token present, or auto + unauthenticated attempt
-    (public repos), or enabled=true.
+    "off": enabled=false — never touch the network. "mine": everything else
+    (auto mode always attempts — unauthenticated for public repos, failing
+    soft; explicit true forces mining).
     """
     enabled = str(config.github.enabled).strip().lower()
     if enabled in ("false", "no", "0"):
         return "off"
-    if enabled in ("true", "yes", "1"):
-        return "mine"
-    # auto: mine when we have (or may have) credentials.
-    if resolve_token() is not None:
-        return "mine"
-    return "mine"  # auto + no token: try unauthenticated (public repos), fail soft
+    return "mine"
 
 
 def mine_github(
@@ -173,7 +189,8 @@ def mine_github(
     Watermark-incremental: when *previous* evidence exists for the same repo,
     only PRs newer than its watermark are fetched and merged into it. Returns
     None when there is nothing to mine (no remote, disabled, no new PRs, or
-    any API failure — the caller prints the reason).
+    any API failure — the caller prints the reason). Rate-limit and API-budget
+    exhaustion stop gracefully, keeping what was fetched.
     """
     gh_repo = detect_github_repo(repo_root)
     if gh_repo is None:
@@ -190,19 +207,27 @@ def mine_github(
             else DEFAULT_BASE_URL
         ),
     )
+    # Trust anchor for token auth: the host the user themselves pointed
+    # origin at (their GHE instance) — never the repo-committed base_url.
+    origin_url = run_git(repo_root, "remote", "get-url", "origin") or ""
+    origin_host = remote_host(origin_url.strip())
 
-    if client_factory is not None:
-        client = client_factory(caps)
-    else:
-        client = GithubClient(resolve_token(), caps)
     try:
-        return _mine_with_client(client, owner, repo_name, previous)
+        if client_factory is not None:
+            client = client_factory(caps)
+        else:
+            client = GithubClient(resolve_token(), caps, origin_host=origin_host)
+        try:
+            return _mine_with_client(client, owner, repo_name, previous)
+        except GithubApiError:
+            # Rate-limit/budget exhaustion is handled inside _mine_with_client
+            # (graceful stop, keep fetched work); anything else discards the
+            # run — fail-soft.
+            return None
+        finally:
+            client.close()
     except GithubApiError:
-        # RateLimitedError is handled inside _mine_with_client (graceful stop,
-        # keep fetched work); anything else discards the run — fail-soft.
         return None
-    finally:
-        client.close()
 
 
 def _mine_with_client(
@@ -271,6 +296,8 @@ def _mine_with_client(
         "rate_limit_remaining": client.stats.rate_limit_remaining,
         "fetched_at": time.time(),
     }
+    # Keep merged evidence newest-first across incremental runs.
+    evidence.pulls.sort(key=lambda record: record.number, reverse=True)
     return evidence
 
 

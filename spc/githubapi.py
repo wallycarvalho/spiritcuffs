@@ -9,10 +9,12 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -28,6 +30,28 @@ class GithubApiError(RuntimeError):
 
 class RateLimitedError(GithubApiError):
     """Rate budget exhausted — callers keep fetched work and stop gracefully."""
+
+
+class BudgetExhaustedError(GithubApiError):
+    """Per-run API-call ceiling reached — callers keep fetched work and stop."""
+
+
+TRUSTED_TOKEN_HOST = "api.github.com"
+
+
+def _host_is_trusted(base_url: str, origin_host: str | None) -> bool:
+    """True when the token may be sent to *base_url*'s host.
+
+    Plain http is never trusted (the header would travel in cleartext).
+    https is trusted when the host is ``api.github.com`` or matches the host
+    of the user's own ``origin`` remote (their GHE instance).
+    """
+    parsed = urlparse(base_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+    return parsed.hostname == TRUSTED_TOKEN_HOST or (
+        origin_host is not None and parsed.hostname == origin_host
+    )
 
 
 @dataclass(frozen=True)
@@ -78,16 +102,54 @@ def parse_github_remote(remote_url: str) -> tuple[str, str] | None:
     return owner, repo
 
 
+def remote_host(remote_url: str) -> str | None:
+    """Hostname of a git remote URL (https or ssh form); None when absent."""
+    url = remote_url.strip()
+    if url.startswith(("git@", "ssh://git@")):
+        after_user = url.split("@", 1)[-1]
+        host = after_user.split(":", 1)[0].split("/", 1)[0]
+        return host or None
+    parsed = urlparse(url)
+    return parsed.hostname or None
+
+
+def split_owner_repo_from_path(remote_url: str) -> tuple[str, str] | None:
+    """``(owner, repo)`` from any-host remote path (after host disambiguation).
+
+    Used when the origin host matches the configured API host (GitHub
+    Enterprise): the URL shape is GitHub-like but the host is arbitrary.
+    """
+    url = remote_url.strip()
+    if "@" in url:
+        url = url.split("@", 1)[-1]
+        url = url.replace("ssh://", "", 1) if url.startswith("ssh://") else url
+    url = url.removesuffix(".git").rstrip("/")
+    for separator in (":", "//"):
+        if separator in url and "://" not in url.split(separator)[0]:
+            url = url.split(separator, 1)[-1] if separator == ":" else url
+            break
+    if "://" in url:
+        url = url.split("://", 1)[-1]
+    parts = [p for p in url.split("/") if p]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[-2], parts[-1]
+    if not owner or not repo:
+        return None
+    return owner, repo
+
+
 def resolve_token() -> str | None:
     """Token resolution order: GITHUB_TOKEN → GH_TOKEN → `gh auth token` probe.
 
     The ``gh`` probe runs only when the binary exists on PATH; any failure is
-    swallowed (fail-soft by design).
+    swallowed (fail-soft by design). Whitespace/newline is stripped from env
+    values so a malformed token can never poison the Authorization header.
     """
     for env_name in ("GITHUB_TOKEN", "GH_TOKEN"):
         token = os.environ.get(env_name)
-        if token:
-            return token
+        if token and token.strip():
+            return token.strip()
     gh_binary = shutil.which("gh")
     if gh_binary is None:
         return None
@@ -120,26 +182,46 @@ class GithubClient:
         *,
         client: httpx.Client | None = None,
         sleep_fn: Any = time.sleep,
+        origin_host: str | None = None,
     ) -> None:
         self._token = token
         self._caps = caps
-        self._client = client or httpx.Client(
-            timeout=DEFAULT_HTTP_TIMEOUT,
-            headers=self._default_headers(token),
-        )
         self._owns_client = client is None
+        self._client = client or httpx.Client(timeout=DEFAULT_HTTP_TIMEOUT)
+        # Headers are applied to whichever client we ended up with (owned or
+        # injected) so the token-pinning trust decision always runs.
+        self._client.headers.update(
+            self._default_headers(token, caps.base_url, origin_host)
+        )
         self._sleep = sleep_fn
         self.stats = FetchStats()
 
     @staticmethod
-    def _default_headers(token: str | None) -> dict[str, str]:
+    def _default_headers(
+        token: str | None, base_url: str, origin_host: str | None
+    ) -> dict[str, str]:
+        """Request headers, with the Bearer token pinned to trusted hosts.
+
+        The token is machine-level, while ``github.base_url`` comes from the
+        repo-committed config — attaching it to an arbitrary host would let a
+        hostile repo exfiltrate it. Trust derives from the host itself:
+        ``api.github.com``, or the host of the user's own ``origin`` remote
+        (their GitHub Enterprise instance). Anything else gets no token, and
+        plain http never gets one (cleartext leak).
+        """
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "spiritcuffs",
         }
-        if token:
+        if token and _host_is_trusted(base_url, origin_host):
             headers["Authorization"] = f"Bearer {token}"
+        elif token:
+            print(
+                "spiritcuffs: custom API host doesn't match origin — "
+                "skipping token auth.",
+                file=sys.stderr,
+            )
         return headers
 
     def close(self) -> None:
@@ -150,8 +232,8 @@ class GithubClient:
     def _get(self, url: str, params: dict[str, Any] | None = None) -> httpx.Response:
         """One GET with rate-limit tracking, 403/429 backoff, and call ceiling."""
         if self.stats.api_calls >= MAX_API_CALLS_PER_RUN:
-            self.stats.stopped_reason = "error"
-            raise GithubApiError("API call ceiling reached")
+            self.stats.stopped_reason = "budget_exhausted"
+            raise BudgetExhaustedError("API call ceiling reached")
         self.stats.api_calls += 1
         try:
             response = self._client.get(url, params=params)
@@ -196,7 +278,7 @@ class GithubClient:
                     params={"state": "closed", "per_page": 50, "page": page,
                             "sort": "created", "direction": "desc"},
                 )
-            except RateLimitedError:
+            except (RateLimitedError, BudgetExhaustedError):
                 return  # graceful stop — already-yielded PRs stay with the consumer
             self.stats.pages_fetched += 1
             try:
@@ -235,7 +317,7 @@ class GithubClient:
                 f"/pulls/{pull_number}/comments",
                 params={"per_page": 50},
             )
-        except RateLimitedError:
+        except (RateLimitedError, BudgetExhaustedError):
             return []  # comment budget is spent; PR walk stops gracefully next page
         try:
             batch = response.json()

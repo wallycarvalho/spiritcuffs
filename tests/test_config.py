@@ -5,7 +5,13 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from spc.config import SpcConfig, load_config, render_default_config, write_default_config
+from spc.config import (
+    GithubConfig,
+    SpcConfig,
+    load_config,
+    render_default_config,
+    write_default_config,
+)
 
 
 def test_defaults_match_spec() -> None:
@@ -102,3 +108,30 @@ def test_section_never_raises_on_any_garbage(tmp_path: Path) -> None:
     )
     config = load_config(tmp_path)
     assert config == SpcConfig()  # every bad value fell back to default
+
+
+def test_github_enabled_unquoted_bool_false_is_honored(tmp_path: Path) -> None:
+    """enabled = false (TOML bool) must disable mining, not fall back to auto."""
+    (tmp_path / ".spc.toml").write_text("[github]\nenabled = false\n", encoding="utf-8")
+    assert load_config(tmp_path).github.enabled == "false"
+
+
+def test_github_enabled_unquoted_bool_true_is_honored(tmp_path: Path) -> None:
+    (tmp_path / ".spc.toml").write_text("[github]\nenabled = true\n", encoding="utf-8")
+    assert load_config(tmp_path).github.enabled == "true"
+
+
+def test_github_enabled_garbage_falls_back_to_auto(tmp_path: Path) -> None:
+    (tmp_path / ".spc.toml").write_text('[github]\nenabled = "maybe"\n', encoding="utf-8")
+    assert load_config(tmp_path).github.enabled == "auto"
+
+
+def test_github_config_roundtrip(tmp_path: Path) -> None:
+    config = SpcConfig(
+        github=GithubConfig(enabled="false", base_url="https://ghe.corp/api/v3")
+    )
+    (tmp_path / ".spc.toml").write_text(
+        '[github]\nenabled = "false"\nbase_url = "https://ghe.corp/api/v3"\n',
+        encoding="utf-8",
+    )
+    assert load_config(tmp_path).github == config.github

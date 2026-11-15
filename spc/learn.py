@@ -14,6 +14,7 @@ from rich.console import Console
 from spc.config import SpcConfig
 from spc.githistory import GitEvidence, mine_git_history
 from spc.githubhistory import (
+    GithubEvidence,
     cluster_themes,
     decide_mining,
     detect_github_repo,
@@ -89,10 +90,7 @@ def _mine_github_source(repo_root: Path, config: SpcConfig, console: Console) ->
                 "[dim]spiritcuffs:[/] origin is not a github remote — skipping GitHub mining."
             )
         else:
-            console.print(
-                "[dim]spiritcuffs:[/] GitHub mining skipped "
-                "(no new merged PRs, or the API was unreachable)."
-            )
+            console.print(f"[dim]spiritcuffs:[/] {_skip_reason(repo_root, config)}")
         return _cached_github_section(repo_root)
 
     save_github_evidence(repo_root, mined.to_dict())
@@ -107,7 +105,77 @@ def _mine_github_source(repo_root: Path, config: SpcConfig, console: Console) ->
             "continuing with git-only profile."
         )
         return ""
-    return themes.strip()
+    filtered = _scrub_theme_section(themes, mined, console)
+    return filtered.strip()
+
+
+# The synthesized section is capped before it enters the profile prompt.
+MAX_THEMES_CHARS = 4000
+# Substrings shorter than this are too common to fingerprint a leak reliably.
+MIN_LEAK_FINGERPRINT_CHARS = 20
+
+
+def _scrub_theme_section(
+    themes: str, evidence: GithubEvidence, console: Console
+) -> str:
+    """Defensively drop theme lines that leak raw-evidence text into the profile.
+
+    PRIVACY: the LLM is instructed to synthesize, but its output is still
+    checked — any line containing a raw comment snippet's long substring (or a
+    raw PR title's long substring) is dropped with a one-line warning. If most
+    of the section leaks, the whole section is dropped. Result is capped at
+    MAX_THEMES_CHARS.
+    """
+    fingerprints: list[str] = []
+    for comment in evidence.comments:
+        snippet = " ".join(comment.body_snippet.split())
+        if len(snippet) >= MIN_LEAK_FINGERPRINT_CHARS:
+            fingerprints.append(snippet)
+    for pull in evidence.pulls:
+        title = " ".join(pull.title.split())
+        if len(title) >= MIN_LEAK_FINGERPRINT_CHARS:
+            fingerprints.append(title)
+
+    kept_lines: list[str] = []
+    dropped = 0
+    for line in themes.splitlines():
+        normalized = " ".join(line.split())
+        if any(
+            fingerprint in normalized or normalized in fingerprint
+            for fingerprint in fingerprints
+        ):
+            dropped += 1
+            continue
+        kept_lines.append(line)
+    if dropped:
+        console.print(
+            "[yellow]spiritcuffs:[/] dropped "
+            f"{dropped} theme line(s) that quoted raw review text — "
+            "privacy filter applied."
+        )
+    leaked_section = bool(fingerprints) and (
+        len(kept_lines) < len(themes.splitlines()) / 2
+    )
+    if leaked_section:
+        console.print(
+            "[yellow]spiritcuffs:[/] theme section looked mostly like quoted "
+            "review text — dropping it entirely."
+        )
+        return ""
+    result = "\n".join(kept_lines).strip()
+    if len(result) > MAX_THEMES_CHARS:
+        result = result[:MAX_THEMES_CHARS] + "\n…(truncated)"
+    return result
+
+
+def _skip_reason(repo_root: Path, config: SpcConfig) -> str:
+    """One-line, accurate reason why GitHub mining was skipped this run."""
+    previous = load_github_evidence(repo_root)
+    if previous is not None and not previous.stats.get(
+        "stopped_reason", "complete"
+    ).startswith(("rate_limit", "budget", "error")):
+        return "GitHub mining skipped — no new merged PRs since the last run."
+    return "GitHub mining skipped (no new merged PRs, or the API was unreachable)."
 
 
 def _cached_github_section(repo_root: Path) -> str:

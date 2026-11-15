@@ -117,3 +117,41 @@ comment string is asserted absent from the profile prompt.
 - `github.*` config keys parsed since step 1 are now consumed; defaults
   unchanged (max_prs=200, max_comments=1000, pages_max=10,
   base_url=https://api.github.com).
+
+## Review fixes (post-review hardening pass)
+
+Fixes applied after a security/robustness review of the step-2 code:
+
+1. **Token pinning (BLOCKER).** The Bearer token is now attached only when
+   the configured `github.base_url` host is `api.github.com`, or matches the
+   host of the user's own `origin` remote (their GHE instance), and is https.
+   A repo-committed `.spc.toml` pointing `base_url` at a hostile host can no
+   longer receive the machine token; plain http never gets a token. A
+   one-line warning prints when token auth is skipped. Origin-host detection
+   for GHE-shaped remotes (`git@ghe.corp:owner/repo.git`) was added so the
+   trust rule has real coverage — GHE mining itself stays opt-in: the repo's
+   `.spc.toml` must declare the matching `base_url`.
+2. **API-call ceiling (was: whole run discarded).** Hitting the 60-call
+   ceiling now raises an internal `BudgetExhaustedError`, treated like the
+   rate limit: the walk stops gracefully, fetched PRs/comments are kept, and
+   the watermark saves for the next run.
+3. **`github.enabled = false` (unquoted TOML bool) honored.** Config
+   normalization accepts bool spellings (`true`/`false`); garbage falls back
+   to `"auto"` with a warning.
+4. **Token hygiene + lifetime.** Env tokens are `.strip()`ed (CR/LF cannot
+   poison the header); the client is constructed inside `try/finally` so it
+   is always closed.
+5. **`decide_mining` honest contract.** Returns only `"off"` or `"mine"`;
+   dead `"skip"` state removed.
+6. **Accurate skip notices.** `spc learn` distinguishes "no new merged PRs
+   since the last run" (clean previous run) from "the API was unreachable"
+   (previous run ended in an error/rate-limit stop).
+7. **Theme leak filter.** LLM-synthesized themes are checked against raw
+   evidence fingerprints (≥20-char substrings of comment snippets and PR
+   titles) before entering the profile: leaked lines are dropped with a
+   warning, a mostly-leaked section is dropped entirely, and the section is
+   capped at 4000 chars.
+
+New tests: token pinning (5), budget exhaustion (2), token hygiene (2),
+`remote_host` helper (1), skip notices (2), theme scrubbing (2), config bool
+normalization (4). Suite: 148 tests passing.
