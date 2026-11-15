@@ -1,0 +1,23 @@
+[llm]
+base_url = "http://127.0.0.1:8931/v1"   # any OpenAI-compatible endpoint
+model = "anthropic/claude-3.5-haiku"        # fast/cheap default; your choice
+api_key_env = "SPC_API_KEY"                 # env var holding the key
+
+[review]
+show_nits = false          # nits hidden by default (signal, not noise)
+strict = false             # true => exit 1 on a critical finding (blocks push)
+max_diff_kb = 200          # diff truncation ceiling; dropped files listed
+cache_diff_hash = true     # reprint cached findings on identical re-review
+
+[secrets]
+block_on_secrets = false   # true => skip the LLM call when a secret is suspected
+
+[learn]
+learn_max_commits = 2000   # git history depth to mine
+profile_max_age_days = 30  # staleness notice threshold (never auto-refresh)
+
+[github]
+enabled = "auto"           # auto | true | false (reserved for step 2: GitHub PR mining)
+github_max_prs = 200       # most recent merged PRs to mine (step 2)
+github_max_comments = 1000 # total inline review comments fetched (step 2)
+github_pages_max = 10      # API pagination cap (step 2)

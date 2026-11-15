@@ -114,3 +114,4 @@ uv run ruff check spc tests
 ```
 
 MIT licensed.
+# scratch note
