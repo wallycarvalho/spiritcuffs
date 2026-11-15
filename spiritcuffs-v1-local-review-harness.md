@@ -105,6 +105,7 @@ spc/
 3. **v1.5:** `spc history` gains accept/dismiss marking → real feedback data accumulates; **generate default docs** (AGENTS.md, CONTRIBUTING.md skeleton) when a repo is missing them, using the same LLM plumbing
 4. **v2:** calibration engine learns per-repo category thresholds from that feedback history
 5. **v3:** shadow-mode PR prediction (the original vision) — by then the data collector is mostly written
+6. **Release prep (before/at v1 public launch):** interactive onboarding wizard (`spc setup`-style: select LLM provider, authenticate, choose model — opencode/claude-code-style CLI), polished README, and public-release prep (PyPI publishing, npm wrapper, docs)
 
 Note the learning distinction: v1 *learns the repo* (git + PR history mining + LLM synthesis at setup); v2 *learns from you* (feedback-driven calibration over time). They stack.
 
