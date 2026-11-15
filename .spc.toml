@@ -1,5 +1,5 @@
 [llm]
-base_url = "http://127.0.0.1:8931/v1"   # any OpenAI-compatible endpoint
+base_url = "https://openrouter.ai/api/v1"   # any OpenAI-compatible endpoint
 model = "anthropic/claude-3.5-haiku"        # fast/cheap default; your choice
 api_key_env = "SPC_API_KEY"                 # env var holding the key
 
