@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import run_git
+from conftest import run_git, run_git_capture
 
 from spc.diff import (
     changed_files,
@@ -62,6 +62,48 @@ def test_changed_files_parses_renames_and_order() -> None:
         "--- a/two.ts\n+++ b/two.ts\n@@ -1 +1 @@\n-a\n+b\n"
     )
     assert changed_files(diff) == ["src/one.py", "two.ts"]
+
+
+def test_changed_files_handles_path_containing_b_slash(git_repo) -> None:
+    """Regression: 'dir b/x' must not be split on its ' b/' at the diff header."""
+    repo = git_repo({"README.md": "# repo\n"})
+    (repo / "dir b").mkdir()
+    (repo / "dir b/x").write_text("one\n", encoding="utf-8")
+    run_git(repo, "add", "dir b/x")
+    run_git(repo, "commit", "-m", "add dir b/x")
+    (repo / "dir b/x").write_text("two\n", encoding="utf-8")
+
+    diff = run_git_capture(repo, "diff")
+    assert "b/dir b/x" in diff  # the ambiguous header form git actually emits
+    assert changed_files(diff) == ["dir b/x"]
+
+
+def test_changed_files_handles_quoted_and_special_paths() -> None:
+    """Quoted headers (quotes/non-ASCII) and /dev/null sides parse correctly."""
+    diff = (
+        'diff --git "a/we\\"ird" "b/we\\"ird"\n'
+        '--- "a/we\\"ird"\n'
+        '+++ "b/we\\"ird"\n'
+        "@@ -1 +1 @@\n-a\n+b\n"
+        'diff --git "a/h\\303\\251llo.txt" "b/h\\303\\251llo.txt"\n'
+        '--- "a/h\\303\\251llo.txt"\n'
+        '+++ "b/h\\303\\251llo.txt"\n'
+        "@@ -1 +1 @@\n-a\n+b\n"
+        "diff --git a/gone.txt b/gone.txt\n"
+        "--- a/gone.txt\n+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n-gone\n"
+    )
+    assert changed_files(diff) == ['we"ird', "héllo.txt", "gone.txt"]
+
+
+def test_changed_files_binary_section_uses_header_fallback() -> None:
+    """Binary sections carry no ---/+++ lines; the header fallback names them."""
+    diff = (
+        "diff --git a/logo.png b/logo.png\n"
+        "index 1234567..89abcde 100644\n"
+        "Binary files a/logo.png and b/logo.png differ\n"
+    )
+    assert changed_files(diff) == ["logo.png"]
 
 
 def test_truncate_diff_lists_dropped_files() -> None:

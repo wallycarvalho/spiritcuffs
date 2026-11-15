@@ -68,22 +68,97 @@ def collect_diff(repo_root: Path) -> DiffResult | None:
 
 
 def changed_files(diff_text: str) -> list[str]:
-    """Extract the touched file paths from a unified diff, in order of appearance."""
+    """Extract the touched file paths from a unified diff, in order of appearance.
+
+    Prefers the ``--- a/<path>`` / ``+++ b/<path>`` lines: with spaces in paths
+    (e.g. ``dir b/x``) the ``diff --git`` header itself is ambiguous, while the
+    ---/+++ lines carry exactly one side each. Falls back to header parsing for
+    sections without ---/+++ lines (binary files, header-only input from
+    ``_split_into_file_sections``).
+    """
+    files: list[str] = []
+    old_path: str | None = None
+    saw_path_lines = False
+    for line in diff_text.splitlines():
+        if line.startswith("--- "):
+            old_path = _parse_diff_path(line[len("--- "):])
+        elif line.startswith("+++ "):
+            saw_path_lines = True
+            new_path = _parse_diff_path(line[len("+++ "):])
+            if new_path == "/dev/null" and old_path is not None:
+                files.append(old_path)  # deletion: only the --- side has a path
+            else:
+                files.append(new_path)
+            old_path = None
+        elif line.startswith("diff --git "):
+            old_path = None  # a malformed section carries no paths over
+    if saw_path_lines:
+        return files
+    return _files_from_headers(diff_text)
+
+
+def _files_from_headers(diff_text: str) -> list[str]:
+    """Fallback: parse ``diff --git a/<old> b/<new>`` headers (binary sections)."""
     files: list[str] = []
     for line in diff_text.splitlines():
         if not line.startswith("diff --git "):
             continue
-        # Format: "diff --git a/<path> b/<path>" — paths may be quoted if they
-        # contain special chars; take the b/ side and strip surrounding quotes.
         remainder = line[len("diff --git "):]
         parts = remainder.split(" b/")
         if len(parts) < 2:
             continue
         path = "b/" + " b/".join(parts[1:])
-        path = path[2:]
-        path = path.strip('"')
-        files.append(path)
+        files.append(path[2:].strip('"'))
     return files
+
+
+def _parse_diff_path(raw: str) -> str:
+    """Parse a ---/+++ path token: strip trailing tab, C-style quotes, a//b/ prefix."""
+    token = raw.split("\t", 1)[0]
+    if token == "/dev/null":
+        return token
+    if token.startswith('"') and token.endswith('"') and len(token) >= 2:
+        token = _unescape_c_style(token[1:-1])
+    if token[:2] in ("a/", "b/"):
+        return token[2:]
+    return token
+
+
+def _unescape_c_style(text: str) -> str:
+    """Decode git's C-style escapes (\\n, \\t, \\\\, \\NNN octal) in quoted paths.
+
+    Consecutive octal escapes form UTF-8 bytes (é = ``\\303\\251``) and must be
+    decoded as a group, not one character each.
+    """
+    escapes = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\"}
+    decoded: list[str] = []
+    pending_bytes = bytearray()
+    index = 0
+
+    def flush_bytes() -> None:
+        if pending_bytes:
+            decoded.append(pending_bytes.decode("utf-8", errors="replace"))
+            pending_bytes.clear()
+
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and index + 1 < len(text):
+            nxt = text[index + 1]
+            if nxt in escapes:
+                flush_bytes()
+                decoded.append(escapes[nxt])
+                index += 2
+                continue
+            if nxt.isdigit():  # octal byte escape, e.g. \303\251 for é
+                octal = text[index + 1:index + 4]
+                pending_bytes.append(int(octal, 8))
+                index += 1 + len(octal)
+                continue
+        flush_bytes()
+        decoded.append(char)
+        index += 1
+    flush_bytes()
+    return "".join(decoded)
 
 
 def diff_hash(diff_text: str) -> str:

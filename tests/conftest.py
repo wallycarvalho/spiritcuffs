@@ -21,6 +21,17 @@ def run_git(repo: Path, *args: str) -> None:
     )
 
 
+def run_git_capture(repo: Path, *args: str) -> str:
+    """Run git in *repo* and return stdout; raises on failure like run_git."""
+    completed = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout
+
+
 @pytest.fixture()
 def git_repo(tmp_path: Path) -> Callable[..., Path]:
     """Factory: create a git repo with a first commit, then optional extra commits.
