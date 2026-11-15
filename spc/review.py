@@ -250,6 +250,7 @@ def run_review(
             model=config.llm.model,
             base_url=config.llm.base_url,
             api_key=llm.resolve_api_key(config.llm.api_key_env),
+            timeout=config.llm.timeout,
         )
     except llm.LlmError as exc:
         console.print(f"[yellow]spiritcuffs:[/] LLM review failed ({exc}); continuing.")

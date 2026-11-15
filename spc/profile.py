@@ -95,6 +95,7 @@ def build_profile(
         model=config.llm.model,
         base_url=config.llm.base_url,
         api_key=api_key,
+        timeout=config.llm.timeout,
     )
 
 

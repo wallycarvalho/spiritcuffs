@@ -1,7 +1,8 @@
-"""Config defaults, partial overrides, and TOML writing."""
+"""Config defaults, partial overrides, typo tolerance, and TOML writing."""
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 from spc.config import SpcConfig, load_config, render_default_config, write_default_config
@@ -54,8 +55,50 @@ def test_write_default_config_no_overwrite(tmp_path: Path) -> None:
 
 
 def test_rendered_default_is_parsable() -> None:
-    import tomllib
-
     data = tomllib.loads(render_default_config())
     assert data["llm"]["api_key_env"] == "SPC_API_KEY"
     assert data["github"]["enabled"] == "auto"
+    assert data["llm"]["timeout"] == 30.0
+
+
+def test_unknown_key_is_dropped_with_defaults_kept(tmp_path: Path) -> None:
+    """A typo'd key must never crash loading — it's ignored, defaults fill in."""
+    (tmp_path / ".spc.toml").write_text(
+        "[llm]\ntimeot = 5\nmodel = \"my/model\"\n",
+        encoding="utf-8",
+    )
+    config = load_config(tmp_path)
+    assert config.llm.model == "my/model"  # valid sibling key still applies
+    assert config.llm.timeout == 30.0  # typo'd key ignored; default intact
+
+
+def test_wrong_typed_value_falls_back_to_default(tmp_path: Path) -> None:
+    (tmp_path / ".spc.toml").write_text(
+        '[review]\nmax_diff_kb = "200"\nstrict = "yes"\n',
+        encoding="utf-8",
+    )
+    config = load_config(tmp_path)
+    assert config.review.max_diff_kb == 200  # string, not int -> default
+    assert config.review.strict is False  # string, not bool -> default
+
+
+def test_bool_is_not_accepted_for_int_field(tmp_path: Path) -> None:
+    """bool is an int subclass in Python; it must NOT pass as an int value."""
+    (tmp_path / ".spc.toml").write_text("[review]\nmax_diff_kb = true\n", encoding="utf-8")
+    assert load_config(tmp_path).review.max_diff_kb == 200
+
+
+def test_unparsable_toml_falls_back_to_defaults(tmp_path: Path) -> None:
+    (tmp_path / ".spc.toml").write_text("not [valid toml", encoding="utf-8")
+    assert load_config(tmp_path) == SpcConfig()
+
+
+def test_section_never_raises_on_any_garbage(tmp_path: Path) -> None:
+    """The push path depends on load_config never raising."""
+    (tmp_path / ".spc.toml").write_text(
+        '[llm]\nbase_url = 123\n[review]\nshow_nits = "maybe"\n'
+        "[learn]\nlearn_max_commits = [1, 2]\n",
+        encoding="utf-8",
+    )
+    config = load_config(tmp_path)
+    assert config == SpcConfig()  # every bad value fell back to default

@@ -8,9 +8,13 @@ from typing import Any
 
 import httpx
 
-DEFAULT_TIMEOUT_SECONDS = 60.0
+DEFAULT_TIMEOUT_SECONDS = 30.0
 MAX_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECONDS = 1.0
+# Retriable statuses: rate limiting + server-side + request timeout.
+# Other 4xx (401 auth, 400 bad request, …) are deterministic — retrying them
+# just delays the same failure, so they fail fast.
+RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
 
 class LlmError(RuntimeError):
@@ -47,10 +51,15 @@ def complete(
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             response = httpx.post(url, json=payload, headers=headers, timeout=timeout)
-            if response.status_code in (429, 500, 502, 503, 504):
+            if response.status_code in RETRYABLE_STATUSES:
                 last_error = f"HTTP {response.status_code}: {response.text[:200]}"
                 _sleep_backoff(attempt)
                 continue
+            if 400 <= response.status_code < 500:
+                raise LlmError(
+                    f"LLM request rejected (HTTP {response.status_code}): "
+                    f"{response.text[:200]}"
+                )
             response.raise_for_status()
             body = response.json()
             return _extract_text(body)

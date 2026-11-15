@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import httpx
 import pytest
 from rich.console import Console
 
@@ -83,6 +86,88 @@ def test_review_llm_failure_returns_zero(git_repo, monkeypatch) -> None:
 
     monkeypatch.setattr(review.llm, "complete", boom)
     assert cli.execute_review(repo, SpcConfig()) == 0
+
+
+def test_llm_auth_error_fails_fast_without_retries(monkeypatch) -> None:
+    """401 is deterministic: exactly ONE http attempt, no backoff, then LlmError."""
+    import spc.llm as llm_mod
+
+    attempts = {"n": 0}
+
+    def fake_post(url, **kwargs):  # noqa: ANN001, ANN003
+        attempts["n"] += 1
+        return httpx.Response(401, request=httpx.Request("POST", url), text="no auth")
+
+    monkeypatch.setattr(llm_mod.httpx, "post", fake_post)
+    try:
+        llm_mod.complete([], model="m", base_url="https://x.test/v1", api_key="k")
+    except llm_mod.LlmError as exc:
+        assert "401" in str(exc)
+    else:
+        raise AssertionError("LlmError not raised")
+    assert attempts["n"] == 1  # no retry on deterministic 4xx
+
+
+def test_llm_rate_limit_still_retries(monkeypatch) -> None:
+    """429 is transient: retried until attempts run out, then LlmError."""
+    import spc.llm as llm_mod
+
+    attempts = {"n": 0}
+
+    def fake_post(url, **kwargs):  # noqa: ANN001, ANN003
+        attempts["n"] += 1
+        return httpx.Response(429, request=httpx.Request("POST", url), text="slow down")
+
+    monkeypatch.setattr(llm_mod.httpx, "post", fake_post)
+    monkeypatch.setattr(llm_mod.time, "sleep", lambda *_: None)
+    try:
+        llm_mod.complete([], model="m", base_url="https://x.test/v1", api_key="k")
+    except llm_mod.LlmError as exc:
+        assert "429" in str(exc)
+    else:
+        raise AssertionError("LlmError not raised")
+    assert attempts["n"] == llm_mod.MAX_ATTEMPTS
+
+
+def test_llm_timeout_config_reaches_client(monkeypatch) -> None:
+    """The configured llm.timeout must be passed through to httpx."""
+    import spc.llm as llm_mod
+
+    captured: dict = {}
+
+    def fake_post(url, **kwargs):  # noqa: ANN001, ANN003
+        captured["timeout"] = kwargs.get("timeout")
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"choices": [{"message": {"content": "[]"}}]},
+        )
+
+    monkeypatch.setattr(llm_mod.httpx, "post", fake_post)
+    llm_mod.complete(
+        [], model="m", base_url="https://x.test/v1", api_key="k", timeout=12.5
+    )
+    assert captured["timeout"] == 12.5
+
+
+def test_review_uses_configured_timeout(git_repo, monkeypatch, tmp_path: Path) -> None:
+    """execute_review threads llm.timeout from .spc.toml into the LLM call."""
+    repo = git_repo({"src/a.py": "x = 1\n"})
+    (repo / "src/a.py").write_text("x = 2\n", encoding="utf-8")
+    from conftest import run_git
+
+    run_git(repo, "add", "src/a.py")
+
+    captured: dict = {}
+
+    def fake_complete(messages, **kwargs):  # noqa: ANN001, ANN003
+        captured.update(kwargs)
+        return "[]"
+
+    monkeypatch.setattr(review.llm, "complete", fake_complete)
+    config = SpcConfig(llm=SpcConfig().llm.__class__(timeout=7.5))
+    cli.execute_review(repo, config)
+    assert captured["timeout"] == 7.5
 
 
 def test_review_blocked_on_secrets_skips_llm(git_repo, monkeypatch) -> None:
