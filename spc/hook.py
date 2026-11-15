@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 HOOK_RELATIVE_PATH = Path(".git") / "hooks" / "pre-push"
@@ -20,24 +22,52 @@ fi
 
 
 def hook_path(repo_root: Path) -> Path:
-    """Absolute path of the pre-push hook inside *repo_root*."""
+    """Default pre-push hook location (``.git/hooks/pre-push``) inside *repo_root*."""
     return repo_root / HOOK_RELATIVE_PATH
 
 
+def _hooks_dir(repo_root: Path) -> Path:
+    """The directory git actually runs hooks from, honoring ``core.hooksPath``.
+
+    Husky and similar managers set core.hooksPath to a repo-relative (or
+    absolute) directory; installing into ``.git/hooks/`` there would be a
+    hook git never executes.
+    """
+    try:
+        configured = subprocess.run(
+            ["git", "-C", str(repo_root), "config", "--get", "core.hooksPath"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        configured = ""
+    if not configured:
+        return hook_path(repo_root).parent
+    hooks_dir = Path(configured)
+    if not hooks_dir.is_absolute():
+        hooks_dir = repo_root / hooks_dir
+    return hooks_dir
+
+
+def _hook_target(repo_root: Path) -> Path:
+    """The pre-push file git will actually execute for *repo_root*."""
+    return _hooks_dir(repo_root) / "pre-push"
+
+
 def install_hook(repo_root: Path) -> str:
-    """Append the marked hook block to ``.git/hooks/pre-push`` (idempotent).
+    """Append the marked hook block to the pre-push hook (idempotent).
 
     Returns one of: "installed", "already", "replaced" (an existing
     spiritcuffs-managed hook was refreshed).
     """
-    path = hook_path(repo_root)
+    path = _hook_target(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
 
     if MARKER_BEGIN in existing:
         # Refresh our block in place (keeps any user content around it).
-        before = existing.split(MARKER_BEGIN)[0]
-        after = existing.split(MARKER_END, 1)[1]
+        before, after = _split_on_block(existing)
         path.write_text(before + HOOK_BLOCK + after, encoding="utf-8")
         return "replaced"
 
@@ -52,6 +82,24 @@ def install_hook(repo_root: Path) -> str:
     path.write_text("#!/bin/sh\n" + HOOK_BLOCK, encoding="utf-8")
     _make_executable(path)
     return "installed"
+
+
+def _split_on_block(text: str) -> tuple[str, str]:
+    """Split *text* around the marked block into (before, after).
+
+    Tolerates a truncated block (BEGIN without END): the orphaned BEGIN and
+    everything after it are treated as dead content — kept in *before* only up
+    to the BEGIN line, rest dropped with a warning.
+    """
+    before = text.split(MARKER_BEGIN)[0]
+    if MARKER_END in text:
+        return before, text.split(MARKER_END, 1)[1]
+    print(
+        "spiritcuffs: found a truncated spiritcuffs hook block (missing end marker) "
+        "— replacing it.",
+        file=sys.stderr,
+    )
+    return before, ""
 
 
 def _has_executable_lines(text: str) -> bool:
@@ -71,12 +119,10 @@ def remove_hook(repo_root: Path) -> bool:
     When nothing executable remains (only a shebang/comments), the hook file
     is unlinked entirely.
     """
-    path = hook_path(repo_root)
+    path = _hook_target(repo_root)
     if not path.exists() or MARKER_BEGIN not in path.read_text(encoding="utf-8"):
         return False
-    text = path.read_text(encoding="utf-8")
-    before = text.split(MARKER_BEGIN)[0]
-    after = text.split(MARKER_END, 1)[1]
+    before, after = _split_on_block(path.read_text(encoding="utf-8"))
     if not _has_executable_lines(before + after):
         path.unlink()
         return True
