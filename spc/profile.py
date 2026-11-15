@@ -13,6 +13,7 @@ from pathlib import Path
 from spc import llm
 from spc.config import SpcConfig
 from spc.githistory import GitEvidence
+from spc.githubhistory import GithubEvidence
 
 ARTIFACTS_DIRNAME = ".spc"
 PROFILE_FILENAME = "profile.md"
@@ -37,30 +38,60 @@ def evidence_path(repo_root: Path) -> Path:
 
 
 def save_evidence(repo_root: Path, evidence: GitEvidence) -> None:
-    """Persist raw git evidence to ``.spc/evidence.json`` (dataclass → JSON)."""
+    """Persist raw git evidence to ``.spc/evidence.json`` (dataclass → JSON).
+
+    Schema 2 keeps per-source blocks (``git`` / ``github``) so step-2 mining
+    merges alongside step-1 stats. Existing github blocks are preserved.
+    """
     directory = artifacts_dir(repo_root)
     directory.mkdir(parents=True, exist_ok=True)
-    payload = {
+    git_block = {
+        "commits_scanned": evidence.commits_scanned,
+        "hotspots": evidence.hotspots,
+        "bug_classes": evidence.bug_classes,
+        "test_dirs": evidence.test_dirs,
+        "test_co_change_ratio": evidence.test_co_change_ratio,
+        "language_proportions": evidence.language_proportions,
+        "total_files_tracked": evidence.total_files_tracked,
+    }
+    payload = _load_raw_payload(repo_root) or {"schema": 2, "sources": {}}
+    sources = payload.setdefault("sources", {})
+    sources["git"] = {
         "schema": 1,
         "source": "git",
         "mined_at": time.time(),
-        "evidence": {
-            "commits_scanned": evidence.commits_scanned,
-            "hotspots": evidence.hotspots,
-            "bug_classes": evidence.bug_classes,
-            "test_dirs": evidence.test_dirs,
-            "test_co_change_ratio": evidence.test_co_change_ratio,
-            "language_proportions": evidence.language_proportions,
-            "total_files_tracked": evidence.total_files_tracked,
-        },
+        "evidence": git_block,
     }
     evidence_path(repo_root).write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
 
-def load_evidence(repo_root: Path) -> dict | None:
-    """Load previously saved evidence; None when missing/corrupt."""
+def save_github_evidence(repo_root: Path, github_block: dict) -> None:
+    """Persist the GitHub evidence block (``githubhistory.GithubEvidence.to_dict()``).
+
+    Merges with whatever is already stored; corrupt/foreign payloads are
+    replaced rather than merged (fail-soft).
+    """
+    directory = artifacts_dir(repo_root)
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = _load_raw_payload(repo_root) or {"schema": 2, "sources": {}}
+    payload.setdefault("sources", {})["github"] = {
+        "schema": 1,
+        "source": "github",
+        **github_block,
+    }
+    evidence_path(repo_root).write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _load_raw_payload(repo_root: Path) -> dict | None:
+    """Read evidence.json as a whole payload dict; None when missing/corrupt/foreign.
+
+    Transparently upgrades the step-1 schema-1 shape (bare git evidence) into
+    the schema-2 ``{"sources": {"git": ...}}`` wrapper.
+    """
     path = evidence_path(repo_root)
     if not path.is_file():
         return None
@@ -68,8 +99,48 @@ def load_evidence(repo_root: Path) -> dict | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema") == 2 and isinstance(payload.get("sources"), dict):
+        return payload
+    # Step-1 flat shape: {"schema":1, "source":"git", "mined_at":..., "evidence":{...}}
     evidence = payload.get("evidence")
+    if isinstance(evidence, dict):
+        return {
+            "schema": 2,
+            "sources": {"git": {**payload, "evidence": evidence}},
+        }
+    return None
+
+
+def load_evidence(repo_root: Path) -> dict | None:
+    """Load the git evidence block; None when missing/corrupt.
+
+    Returns the flat git-evidence dict (same shape as step 1) regardless of
+    whether the underlying file is schema 1 or schema 2.
+    """
+    payload = _load_raw_payload(repo_root)
+    if payload is None:
+        return None
+    git_block = payload["sources"].get("git")
+    if not isinstance(git_block, dict):
+        return None
+    evidence = git_block.get("evidence")
     return evidence if isinstance(evidence, dict) else None
+
+
+def load_github_evidence(repo_root: Path) -> GithubEvidence | None:
+    """Load the GitHub evidence block as a :class:`GithubEvidence`; None when absent."""
+    payload = _load_raw_payload(repo_root)
+    if payload is None:
+        return None
+    github_block = payload["sources"].get("github")
+    if not isinstance(github_block, dict):
+        return None
+    try:
+        return GithubEvidence.from_dict(github_block)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_profile(

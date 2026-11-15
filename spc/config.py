@@ -50,9 +50,10 @@ class LearnConfig:
 
 @dataclass(frozen=True)
 class GithubConfig:
-    """Source B knobs. ``enabled`` is parsed but ignored until step 2."""
+    """Source B knobs: GitHub PR/comment mining during ``spc learn``."""
 
     enabled: str = "auto"
+    base_url: str = "https://api.github.com"
     github_max_prs: int = 200
     github_max_comments: int = 1000
     github_pages_max: int = 10
@@ -175,10 +176,11 @@ learn_max_commits = 2000   # git history depth to mine
 profile_max_age_days = 30  # staleness notice threshold (never auto-refresh)
 
 [github]
-enabled = "auto"           # auto | true | false (reserved for step 2: GitHub PR mining)
-github_max_prs = 200       # most recent merged PRs to mine (step 2)
-github_max_comments = 1000 # total inline review comments fetched (step 2)
-github_pages_max = 10      # API pagination cap (step 2)
+enabled = "auto"           # auto | true | false — mine GitHub PR history in `spc learn`
+base_url = "https://api.github.com"  # change for GitHub Enterprise
+github_max_prs = 200       # most recent merged PRs to mine
+github_max_comments = 1000 # total inline review comments fetched
+github_pages_max = 10      # API pagination cap
 '''
 
 

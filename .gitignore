@@ -1,8 +1,10 @@
 __pycache__/
-*.py[cod]
-.venv/
-dist/
-*.egg-info/
+__pycache__/
+_fakebin/
 .pytest_cache/
 .ruff_cache/
 .spc/
+.venv/
+*.egg-info/
+*.py[cod]
+dist/
