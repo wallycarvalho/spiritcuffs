@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -17,12 +19,9 @@ DEFAULT_HISTORY_ROOT = Path.home() / ".spc" / "history"
 
 def history_dir(repo_path: Path) -> Path:
     """History root (``~/.spc/history`` unless overridden for tests)."""
-    import os
-
     override = os.environ.get(HISTORY_ROOT_ENV)
     if override:
         return Path(override)
-    del repo_path
     return DEFAULT_HISTORY_ROOT
 
 
@@ -63,8 +62,12 @@ def read_records(repo_path: Path) -> list[dict]:
     path = history_file(repo_path)
     if not path.is_file():
         return []
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:  # permissions/race — fail soft; history is advisory
+        return []
     records: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in content.splitlines():
         if not line.strip():
             continue
         try:
@@ -82,6 +85,25 @@ def last_record_for_hash(repo_path: Path, diff_hash: str) -> dict | None:
         if record.get("diff_hash") == diff_hash:
             return record
     return None
+
+
+def cache_key(
+    diff_hash: str,
+    *,
+    model: str,
+    strict: bool,
+    show_nits: bool,
+    profile_hash: str,
+) -> str:
+    """Salted cache key: diff plus everything that changes review output.
+
+    A bare diff hash goes stale when the model, rubric toggles, or profile
+    change — the salt keeps cached findings from outliving the settings
+    that produced them.
+    """
+    salt = json.dumps([model, strict, show_nits, profile_hash], ensure_ascii=False)
+    digest = hashlib.sha256(f"{diff_hash}\n{salt}".encode()).hexdigest()
+    return f"{diff_hash[:16]}-{digest[:16]}"
 
 
 def print_history(repo_path: Path, console: Console, limit: int = 20) -> None:

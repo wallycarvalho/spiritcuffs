@@ -94,6 +94,65 @@ def test_cache_hit_skips_llm_in_execute_review(git_repo, monkeypatch, capsys) ->
     assert "src/a.py" in out
 
 
+def test_cache_salt_changes_block_stale_hits(git_repo, monkeypatch) -> None:
+    """Changing strict/show_nits/model must invalidate the cached findings.
+
+    Regression: with strict=false a critical was cached; flipping strict=true
+    must NOT reuse that cache entry (the push would slip past a blocker).
+    """
+    from conftest import run_git
+
+    from spc import cli, review
+    from spc.config import SpcConfig
+
+    repo = git_repo({"src/a.py": "x = 1\n"})
+    (repo / "src/a.py").write_text("x = 2\n", encoding="utf-8")
+    run_git(repo, "add", "src/a.py")
+    monkeypatch.chdir(repo)
+    calls = {"n": 0}
+
+    def fake_complete(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["n"] += 1
+        return '[{"severity":"critical","file":"src/a.py","line":1,"message":"m","suggestion":"s"}]'
+
+    monkeypatch.setattr(review.llm, "complete", fake_complete)
+
+    loose = SpcConfig()
+    assert cli.execute_review(repo, loose) == 0  # critical found, strict=false -> 0
+
+    strict = SpcConfig(review=SpcConfig().review.__class__(strict=True))
+    assert cli.execute_review(repo, strict) == 1  # cache miss -> re-review -> blocked
+    assert calls["n"] == 2
+
+
+def test_cache_salt_profile_change_reruns_llm(git_repo, monkeypatch) -> None:
+    """An edited profile must invalidate cached findings for the same diff."""
+    from conftest import run_git
+
+    from spc import cli, review
+    from spc.config import SpcConfig
+    from spc.profile import save_profile
+
+    repo = git_repo({"src/a.py": "x = 1\n"})
+    (repo / "src/a.py").write_text("x = 2\n", encoding="utf-8")
+    run_git(repo, "add", "src/a.py")
+    monkeypatch.chdir(repo)
+    calls = {"n": 0}
+
+    def fake_complete(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["n"] += 1
+        return "[]"
+
+    monkeypatch.setattr(review.llm, "complete", fake_complete)
+    config = SpcConfig()
+
+    save_profile(repo, "# profile v1")
+    cli.execute_review(repo, config)
+    save_profile(repo, "# profile v2 — different guidance")
+    cli.execute_review(repo, config)
+    assert calls["n"] == 2  # profile changed -> full re-review
+
+
 def test_cache_disabled_reruns_llm(git_repo, monkeypatch) -> None:
     from conftest import run_git
 
@@ -130,6 +189,18 @@ def test_corrupt_lines_skipped(tmp_path: Path) -> None:
     records = read_records(tmp_path)
     assert len(records) == 1
     assert records[0]["diff_hash"] == "ok"
+
+
+def test_read_records_unreadable_file_returns_empty(tmp_path: Path) -> None:
+    """Unreadable history file must degrade to no records, never raise."""
+    path = history_file(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}\n", encoding="utf-8")
+    path.chmod(0o000)
+    try:
+        assert read_records(tmp_path) == []
+    finally:
+        path.chmod(0o644)  # so tmp_path cleanup works on all platforms
 
 
 def test_diff_hash_usage_consistent(tmp_path: Path) -> None:

@@ -125,6 +125,27 @@ def test_review_outside_repo_exits_zero(tmp_path, monkeypatch) -> None:
     assert "not inside a git repository" in result.output
 
 
+def test_review_failsoft_on_unexpected_crash(git_repo, monkeypatch) -> None:
+    """Any unexpected exception in the push path must exit 0, never a traceback."""
+    from conftest import run_git
+
+    repo = git_repo({"src/a.py": "a=1\n"})
+    (repo / "src/a.py").write_text("a=2\n", encoding="utf-8")
+    run_git(repo, "add", "src/a.py")
+    monkeypatch.chdir(repo)
+
+    def boom(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("simulated unexpected crash")
+
+    # cli bound the name at import time, so patch the binding it calls.
+    monkeypatch.setattr(cli, "scan_diff_for_secrets", boom)
+    reading = Console(record=True, width=100)
+    monkeypatch.setattr(cli, "console", reading)
+
+    assert cli.execute_review(repo, load_config(repo)) == 0
+    assert "review skipped" in reading.export_text()
+
+
 def test_gitignore_uses_info_exclude_when_no_gitignore(git_repo, monkeypatch) -> None:
     """A repo with no .gitignore gets .spc/ in .git/info/exclude instead."""
     repo = git_repo({"src/a.py": "a=1\n"})

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 
 import typer
@@ -14,6 +15,7 @@ from spc import review as review_mod
 from spc.config import SpcConfig, load_config, write_default_config
 from spc.conventions import discover_conventions
 from spc.diff import DiffResult, collect_diff, diff_hash, find_repo_root, truncate_diff
+from spc.log import cache_key
 from spc.profile import load_profile, staleness_notice
 from spc.secrets import scan_diff_for_secrets
 
@@ -88,8 +90,20 @@ def execute_review(repo_root: Path, config: SpcConfig) -> int:
     """The whole review flow, shared by the command and ``init``.
 
     Returns the process exit code: 0 unless strict + a critical finding.
-    Fail-soft by design: any error path returns 0 (never breaks a push).
+    Fail-soft by design: any unexpected error returns 0 (never breaks a push);
+    strict + critical is the ONLY non-zero path.
     """
+    try:
+        return _execute_review_inner(repo_root, config)
+    except Exception as exc:  # noqa: BLE001 — the push path must never crash
+        console.print(
+            f"[yellow]spiritcuffs:[/] review skipped — unexpected error ({exc}); continuing."
+        )
+        return 0
+
+
+def _execute_review_inner(repo_root: Path, config: SpcConfig) -> int:
+    """Review pipeline proper; see :func:`execute_review` for the contract."""
     diff_result = collect_diff(repo_root)
     if diff_result is None:
         return 0
@@ -105,7 +119,18 @@ def execute_review(repo_root: Path, config: SpcConfig) -> int:
     if notice:
         console.print(f"[yellow]{notice}[/]")
 
-    digest = diff_hash(diff_result.text)
+    profile = load_profile(repo_root)
+    conventions = discover_conventions(repo_root)
+    hotspots = _hotspot_paths(repo_root)
+    profile_hash = sha256((profile or "").encode("utf-8")).hexdigest()
+
+    digest = cache_key(
+        diff_hash(diff_result.text),
+        model=config.llm.model,
+        strict=config.review.strict,
+        show_nits=config.review.show_nits,
+        profile_hash=profile_hash,
+    )
 
     if config.review.cache_diff_hash:
         cached_record = log_mod.last_record_for_hash(repo_root, digest)
@@ -135,10 +160,6 @@ def execute_review(repo_root: Path, config: SpcConfig) -> int:
         if config.secrets.block_on_secrets:
             console.print("[yellow]spiritcuffs: block_on_secrets=true — skipping LLM review.[/]")
             return 0
-
-    profile = load_profile(repo_root)
-    conventions = discover_conventions(repo_root)
-    hotspots = _hotspot_paths(repo_root)
 
     output = review_mod.run_review(
         diff_result, profile, conventions, config, console, hotspot_paths=hotspots
