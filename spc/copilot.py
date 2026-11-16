@@ -203,17 +203,14 @@ def check_entitlement(oauth_token: str, client: httpx.Client | None = None) -> N
 def exchange_token(
     oauth_token: str, client: httpx.Client | None = None
 ) -> CopilotToken:
-    """Trade the long-lived OAuth token for a short-lived Copilot API token.
+    """Fetch a short-lived Copilot API token (GET copilot_internal/v2/token).
 
     The Copilot token must never be persisted — it lives for one run only.
-    If the exchange is rejected (e.g. legacy ``gho_`` tokens minted before the
-    client-ID switch, which the endpoint answers with 404), fall back to using
-    the OAuth token directly — that works for GA models, only preview models
-    require an exchanged session token.
+    If the exchange is rejected (401/403/404), fall back to using the OAuth
+    token directly — raw tokens work for some models; model availability is
+    plan- and integrator-gated either way.
     """
-    response = _post_authed(
-        TOKEN_EXCHANGE_URI, oauth_token, client=client
-    )
+    response = _get_authed(TOKEN_EXCHANGE_URI, oauth_token, client=client)
     body = _json(response)
     token = body.get("token")
     if isinstance(token, str) and token:
@@ -264,20 +261,19 @@ def _post(url: str, json: dict[str, str], client: httpx.Client | None) -> httpx.
         raise CopilotError(f"cannot reach GitHub ({type(exc).__name__}) — try again") from exc
 
 
-def _post_authed(
+def _get_authed(
     url: str, bearer: str, client: httpx.Client | None
 ) -> httpx.Response:
-    """Authenticated POST (token exchange); transport errors become CopilotError.
+    """Authenticated GET (token exchange); transport errors become CopilotError.
 
-    Uses the ``token <tok>`` auth scheme — ``Bearer`` is rejected by the
-    ``copilot_internal`` exchange for some token types (opencode's evidence
-    table: ghu_ + ``token`` → 200, gho_ + either → 404).
+    Uses the ``token <tok>`` auth scheme — the scheme the VS Code client and
+    every community integration use for ``copilot_internal`` endpoints.
     """
     headers = {**_headers(), "Authorization": f"token {bearer}"}
     try:
         if client is not None:
-            return client.post(url, json={}, headers=headers)
-        return httpx.post(url, json={}, headers=headers, timeout=15.0)
+            return client.get(url, headers=headers)
+        return httpx.get(url, headers=headers, timeout=15.0)
     except httpx.HTTPError as exc:
         raise CopilotError(f"cannot reach GitHub ({type(exc).__name__}) — try again") from exc
 
