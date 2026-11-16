@@ -93,7 +93,7 @@ back to stored config/defaults — idempotent, CI-friendly.
   comment), appends missing keys at section end, and refuses to touch a config
   that fails `tomllib` parsing.
 
-## Tests (195 total; +47 vs step 2's 148)
+## Tests (206 total; +58 vs step 2's 148)
 
 - `tests/test_userconfig.py` (19): path override, missing/garbage → empty,
   mode 600, merge-never-wipe, roundtrip, key-resolution arms (repo key → user key
@@ -135,6 +135,49 @@ comment-stripping incident (now regression-tested).
    mask the user's setup choices; documented in README (config reference).
 6. **npm package version stays 0.0.0** — it's a thin launcher; bump to 0.1.0 at
    real npm publish time if desired.
+
+## Review fixes (post-review hardening pass)
+
+All 7 findings fixed; suite went 195 → 206.
+
+1. **`--api-key-env` was a silent no-op in non-interactive mode** (MAJOR) —
+   `_step_api_key` (spc/setup.py) now persists the env-var name when provided
+   with `--api-key-env`, even without `--api-key`. README's CI recipe
+   (`spc setup -y --provider openrouter --api-key-env VAR`) now configures
+   something. Test: `test_api_key_env_persisted_in_non_interactive_mode`.
+2. **Pre-existing permissive user config is now repaired on load** (MAJOR) —
+   `load_user_config` (spc/userconfig.py) best-effort `chmod(0o600)`s the file
+   whenever it exists; `OSError` is swallowed (filesystems without chmod).
+   Tests: `test_load_repairs_world_readable_file`,
+   `test_load_survives_chmod_failure`.
+3. **Non-interactive setup no longer auto-runs `spc init`** (MAJOR) —
+   `_offer_repo_wiring` prints `wire up this repo later: spc init` instead of
+   spending LLM tokens in CI. Interactive confirm flow unchanged.
+   Tests: `test_non_interactive_inside_git_repo_does_not_auto_init`,
+   `test_repo_wiring_interactive_confirm_runs_init_inside_git_repo` (renamed
+   from `test_repo_wiring_runs_init_inside_git_repo`).
+4. **API key can leak into error text** (MINOR) — all `LlmError` messages are
+   redacted via `_redact()` (spc/llm.py): the configured key is replaced with
+   `***` before any body/exception text is embedded. A hostile endpoint can no
+   longer echo the `Authorization` value through a ping failure.
+   Tests: tests/test_llm.py (new file — redaction on 4xx, on retry ladder,
+   no-op with no key).
+5. **`_update_toml_section` comment split was quote-unaware** (MINOR) —
+   replaced the first-`#` split with `_split_trailing_comment`, which tracks
+   quotes so `api_key_env = "VAR # not comment"  # trailing` survives a
+   rewrite verbatim. Test:
+   `test_preferences_preserve_comment_with_hash_in_string`.
+6. **Ping ignored repo-level `llm.api_key`** (MINOR) — `_ping` now loads the
+   repo config and resolves the key exactly like the review path
+   (`resolve_api_key(config.llm)`); a repo with a committed key no longer gets
+   "connection test failed" while reviews succeed. Test:
+   `test_ping_uses_repo_api_key`.
+7. **Ping could stall ~48s on a hanging endpoint** (MINOR) —
+   `llm.complete()` gained an `attempts` parameter (default unchanged for the
+   review path); `_ping` passes `attempts=1`, so worst case is one 15s timeout.
+   Tests: `attempts=1` makes exactly one HTTP call; default still retries 3.
+
+Ruff clean (spc + tests); full suite 206 passed.
 
 ## What's NOT in this step (by design)
 
