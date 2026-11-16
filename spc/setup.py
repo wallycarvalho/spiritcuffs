@@ -16,7 +16,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
-from spc.config import LlmConfig
+from spc.config import LlmConfig, load_config
 from spc.userconfig import (
     UserConfig,
     load_user_config,
@@ -273,6 +273,18 @@ def _step_api_key(
         LlmConfig(base_url=provider.base_url, api_key_env=provider.api_key_env)
     )
     if non_interactive:
+        if api_key_env is not None and api_key_env.strip():
+            save_user_config(
+                user_config_path(),
+                llm_api_key_env=api_key_env.strip(),
+                llm_base_url=provider.base_url,
+                llm_model=provider.model,
+            )
+            console.print(
+                f"[green]will use env var[/] [bold]{api_key_env.strip()}[/] "
+                "(export it yourself; the key never touches disk)"
+            )
+            return
         console.print(
             f"API key: {mask_secret(existing)} [dim](set with --api-key / --api-key-env)[/]"
         )
@@ -400,12 +412,38 @@ def _update_toml_section(text: str, section: str, updates: dict[str, str]) -> st
             None,
         )
         if key_line is not None:
-            comment = lines[key_line].split("#", 1)[1] if "#" in lines[key_line] else None
-            lines[key_line] = f"{key} = {value}  #{comment}" if comment else f"{key} = {value}"
+            trailing = _split_trailing_comment(lines[key_line])
+            if trailing is None:
+                lines[key_line] = f"{key} = {value}"
+            else:
+                left_side, comment = trailing
+                # left_side is everything before the '#', e.g. `strict = false`
+                key_name = left_side.split("=", 1)[0].rstrip()
+                lines[key_line] = f"{key_name} = {value}  #{comment}"
         else:
             lines.insert(section_end, f"{key} = {value}")
             section_end += 1
     return "\n".join(lines) + "\n"
+
+
+def _split_trailing_comment(line: str) -> tuple[str, str] | None:
+    """Split ``key = value  # comment`` into (``key = value``, comment text).
+
+    A ``#`` inside a quoted string value is NOT a comment, so quotes are
+    tracked before splitting. The comment text keeps its original inner
+    spacing (e.g. `` inline comment``) so the rewritten line reads as before.
+    None when the line has no trailing comment.
+    """
+    in_string: str | None = None
+    for index, char in enumerate(line):
+        if in_string:
+            if char == in_string:
+                in_string = None
+        elif char in ("'", '"'):
+            in_string = char
+        elif char == "#":
+            return line[:index], line[index + 1 :]
+    return None
 
 
 def _step_preferences(
@@ -446,11 +484,20 @@ def _step_preferences(
 
 
 def _ping(console: Console, base_url: str, model: str) -> None:
-    """One cheap live LLM call through the real plumbing; fail-soft output."""
+    """One cheap live LLM call through the real plumbing; fail-soft output.
+
+    Single attempt (no retry ladder) so a hanging endpoint can't stall the
+    wizard; key resolution matches the review path (repo api_key → user
+    config → env) so the ping can't fail where reviews would succeed.
+    """
     from spc import llm
+    from spc.diff import find_repo_root
     from spc.userconfig import resolve_api_key
 
-    api_key = resolve_api_key(LlmConfig(base_url=base_url, model=model))
+    repo_root = find_repo_root()
+    config = load_config(repo_root) if repo_root is not None else None
+    llm_config = config.llm if config is not None else LlmConfig()
+    api_key = resolve_api_key(llm_config)
     try:
         text = llm.complete(
             [{"role": "user", "content": "ping — reply with the single word: pong"}],
@@ -458,6 +505,7 @@ def _ping(console: Console, base_url: str, model: str) -> None:
             base_url=base_url,
             api_key=api_key,
             timeout=15.0,
+            attempts=1,
         )
     except llm.LlmError as exc:
         console.print(f"[yellow]connection test failed:[/] {exc}")
@@ -468,13 +516,21 @@ def _ping(console: Console, base_url: str, model: str) -> None:
 
 
 def _offer_repo_wiring(console: Console, non_interactive: bool) -> None:
-    """Offer to run `spc init` when inside a git repo; print the later-command otherwise."""
+    """Offer to run `spc init` when inside a git repo; print the later-command otherwise.
+
+    Non-interactive runs never auto-init: a scripted `spc setup -y` must not
+    spend LLM tokens on profile synthesis as a side effect — it prints the
+    one-liner instead.
+    """
     from spc.diff import find_repo_root
 
     if find_repo_root() is None:
         console.print("[dim]not in a git repo — later: cd <repo> && spc init[/]")
         return
-    if not non_interactive and not typer.confirm("Wire up this repo now (spc init)?", default=True):
+    if non_interactive:
+        console.print("[dim]wire up this repo later: spc init[/]")
+        return
+    if not typer.confirm("Wire up this repo now (spc init)?", default=True):
         return
     from spc.cli import init as init_command
 

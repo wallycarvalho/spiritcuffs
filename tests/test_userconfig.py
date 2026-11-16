@@ -191,3 +191,28 @@ def test_os_environ_still_read_directly_by_llm_module(
 
     monkeypatch.setenv("SPC_API_KEY", "legacy")
     assert llm.resolve_api_key("SPC_API_KEY") == "legacy"
+
+
+def test_load_repairs_world_readable_file(user_home: Path) -> None:
+    """A pre-existing permissive user config is chmod'ed 600 on load (best-effort)."""
+    user_home.parent.mkdir(parents=True, exist_ok=True)
+    user_home.write_text('[llm]\napi_key = "sk-abcdef1234567890"\n', encoding="utf-8")
+    user_home.chmod(0o644)
+    config = load_user_config()
+    assert config.llm_api_key == "sk-abcdef1234567890"
+    assert stat.S_IMODE(user_home.stat().st_mode) == 0o600
+
+
+def test_load_survives_chmod_failure(
+    user_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """chmod failing (e.g. exotic filesystem) never breaks loading — fail soft."""
+    user_home.parent.mkdir(parents=True, exist_ok=True)
+    user_home.write_text('[llm]\napi_key = "sk-abcdef1234567890"\n', encoding="utf-8")
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise OSError("no chmod here")
+
+    monkeypatch.setattr(Path, "chmod", boom)
+    config = load_user_config()
+    assert config.llm_api_key == "sk-abcdef1234567890"

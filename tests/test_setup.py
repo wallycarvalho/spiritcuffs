@@ -167,7 +167,7 @@ def test_ping_success_prints_masked_reply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
 
-    def fake_complete(messages, *, model, base_url, api_key, timeout):  # noqa: ANN001, ANN003
+    def fake_complete(messages, *, model, base_url, api_key, timeout, **kwargs):  # noqa: ANN001, ANN003
         return "pong\n"
 
     monkeypatch.setattr("spc.llm.complete", fake_complete)
@@ -230,9 +230,14 @@ def test_repo_wiring_message_when_not_in_git_repo(
     assert "not in a git repo" in printed
 
 
-def test_repo_wiring_runs_init_inside_git_repo(
+def test_repo_wiring_interactive_confirm_runs_init_inside_git_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Interactive yes-confirm runs init; non-interactive never does (no LLM spend).
+
+    Menus are skipped via flags (stdin isn't a TTY under pytest); confirm→True
+    accepts wiring, prompt→"" skips the optional GitHub hidden prompt.
+    """
     import subprocess
 
     subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
@@ -241,7 +246,18 @@ def test_repo_wiring_runs_init_inside_git_repo(
     )
     subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "T"], check=True)
     _no_ping(monkeypatch)
-    exit_code = run_setup(_console(), non_interactive=True, skip_ping=True)
+    import spc.setup as setup_mod
+
+    monkeypatch.setattr(setup_mod.typer, "confirm", lambda *a, **k: True)
+    monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "")
+    exit_code = run_setup(
+        _console(),
+        non_interactive=False,
+        provider_key="openrouter",
+        api_key="sk-test-1234567890abcd",
+        model="anthropic/claude-3.5-haiku",
+        skip_ping=True,
+    )
     assert exit_code == 0
     assert (tmp_path / ".spc.toml").is_file()
 
@@ -289,3 +305,70 @@ def test_preferences_append_missing_keys(tmp_path: Path, monkeypatch: pytest.Mon
     assert "[review]" in text
     assert "strict = true" in text
     assert "show_nits = true" in text
+
+
+def test_api_key_env_persisted_in_non_interactive_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--api-key-env without --api-key must persist the env-var name (was a silent no-op)."""
+    _no_ping(monkeypatch)
+    run_setup(
+        _console(),
+        non_interactive=True,
+        provider_key="openrouter",
+        api_key_env="MY_CUSTOM_VAR",
+        skip_ping=True,
+    )
+    user = load_user_config()
+    assert user.llm_api_key_env == "MY_CUSTOM_VAR"
+    assert user.llm_api_key is None  # env-var-only path stores no key value
+
+
+def test_non_interactive_inside_git_repo_does_not_auto_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """`spc setup -y` in a repo prints the one-liner — it must not run init (LLM spend)."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    _no_ping(monkeypatch)
+    console = Console(file=io.StringIO(), width=200)
+    exit_code = run_setup(console, non_interactive=True, skip_ping=True)
+    printed = console.file.getvalue()  # type: ignore[union-attr]
+    assert exit_code == 0
+    assert "spc init" in printed
+    assert (tmp_path / ".spc.toml").exists() is False  # init never ran
+
+
+def test_preferences_preserve_comment_with_hash_in_string(tmp_path: Path) -> None:
+    """A '#' inside a quoted value is not a comment — the editor must not split there."""
+    from spc.setup import _update_toml_section
+
+    text = '[llm]\napi_key_env = "VAR # not comment"  # trailing\n'
+    updated = _update_toml_section(text, "llm", {"api_key_env": "OTHER"})
+    assert updated == '[llm]\napi_key_env = OTHER  # trailing\n'
+    # the quoted value itself was never treated as a comment boundary
+    assert "not comment" not in updated.split("#")[0]
+
+
+def test_ping_uses_repo_api_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ping resolves the key like the review path — repo llm.api_key must reach the call."""
+    import subprocess
+
+    import spc.setup as setup_mod
+
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    (tmp_path / ".spc.toml").write_text(
+        '[llm]\nbase_url = "https://llm.example/v1"\nmodel = "m"\napi_key = "sk-repo-key-987654"\n'
+    )
+    captured: dict[str, object] = {}
+
+    def fake_complete(messages, *, model, base_url, api_key, timeout, **kwargs):  # noqa: ANN001, ANN003
+        captured["api_key"] = api_key
+        return "pong\n"
+
+    monkeypatch.setattr("spc.llm.complete", fake_complete)
+    setup_mod._ping(_console(), base_url="https://llm.example/v1", model="m")
+    assert captured["api_key"] == "sk-repo-key-987654"

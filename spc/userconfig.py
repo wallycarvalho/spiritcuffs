@@ -40,10 +40,20 @@ def user_config_path() -> Path:
 
 
 def load_user_config(path: Path | None = None) -> UserConfig:
-    """Parse the user config; missing file or bad TOML yields empty (never raises)."""
+    """Parse the user config; missing file or bad TOML yields empty (never raises).
+
+    Best-effort tightens the file to mode 0600 whenever it exists — a backup
+    restore or manual creation may have left it world-readable, and a secrets
+    file must never stay that way. OSError (unsupported chmod, odd ownership)
+    is swallowed: reading must keep working.
+    """
     path = path or user_config_path()
     if not path.is_file():
         return UserConfig()
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
