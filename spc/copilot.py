@@ -169,6 +169,7 @@ def check_entitlement(oauth_token: str, client: httpx.Client | None = None) -> N
     A failed or malformed lookup must NOT deny login (matching OpenCode's
     rule) — network errors and odd payloads are silently tolerated here.
     """
+    client = client or httpx.Client(timeout=15.0)
     try:
         response = client.get(
             ENTITLEMENT_URI,
