@@ -103,18 +103,16 @@ def test_token_resolution_falls_back_to_gh_token(monkeypatch) -> None:
     assert resolve_token() == "gt-2"
 
 
-def test_token_resolution_uses_gh_binary(monkeypatch) -> None:
+def test_token_resolution_uses_gh_binary(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
-    bin_dir = Path(__file__).parent / "_fakebin"
-    bin_dir.mkdir(exist_ok=True)
+    bin_dir = tmp_path / "fakebin"
+    bin_dir.mkdir()
     fake_gh = bin_dir / "gh"
     fake_gh.write_text("#!/bin/sh\necho tok-from-gh\n", encoding="utf-8")
     fake_gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
     assert resolve_token() == "tok-from-gh"
-    fake_gh.unlink()
-    bin_dir.rmdir()
 
 
 def test_token_resolution_none_when_nothing_available(monkeypatch) -> None:
