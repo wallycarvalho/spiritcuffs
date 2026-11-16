@@ -6,3 +6,4 @@ To be considered:
   ☐ .spc.toml editor strips column alignment on comments (cosmetic churn in diffs)
   ☐ setup ping failing with model_not_supported should offer next shortlist entry (plan/integrator-gated models are common)
   ☐ parked review minors: step-1 items 8-10 (hook chmod, history dict assumption, duplicated defaults), step-2 minors (comments cap 50/PR, pages_max on comments, late-merged PR watermark, 403/429 sleep-once, dead REMOTE_TIMEOUT_SECONDS, case-sensitive host match)
+  ☐ include business important rules during the learning process for profile.md that are often forgotten - business rules are often forgotten and not included in the learning process for profile.md

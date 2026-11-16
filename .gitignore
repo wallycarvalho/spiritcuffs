@@ -8,3 +8,5 @@ _fakebin/
 *.egg-info/
 *.py[cod]
 dist/
+*.todo
+.serena
