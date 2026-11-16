@@ -38,7 +38,7 @@ def test_provider_table_defaults() -> None:
     assert by_key["openrouter"].base_url == "https://openrouter.ai/api/v1"
     assert by_key["openrouter"].api_key_env == "OPENROUTER_API_KEY"
     assert by_key["openai"].base_url == "https://api.openai.com/v1"
-    assert by_key["openai"].model == "gpt-4o-mini"
+    assert by_key["openai"].model == "gpt-6-luna"
     assert by_key["anthropic"].api_key_env == "ANTHROPIC_API_KEY"
     assert by_key["ollama"].base_url == "http://localhost:11434/v1"
     assert by_key["ollama"].api_key_env == "LLM_API_KEY"

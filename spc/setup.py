@@ -61,7 +61,10 @@ PROVIDERS: tuple[Provider, ...] = (
         key="openai",
         label="OpenAI",
         base_url="https://api.openai.com/v1",
-        model="gpt-4o-mini",
+        # gpt-6-luna: active, low-cost tier, chat-completions-capable
+        # (verified against OpenAI's model pages, 2026-11). gpt-4o-mini is
+        # deprecated with shutdown 2027-01-14; o3-mini shut down 2026-10-23.
+        model="gpt-6-luna",
         api_key_env="OPENAI_API_KEY",
     ),
     Provider(
@@ -94,6 +97,10 @@ PROVIDERS: tuple[Provider, ...] = (
 )
 
 # Curated shortlist per provider; free-text always wins over these.
+# OpenAI: gpt-6-luna/gpt-5.6-luna are active and support chat completions;
+# gpt-4o-mini stays as the third pick (deprecated, shutdown 2027-01-14 —
+# still working, familiar to existing users). o3-mini was dropped (shutdown
+# 2026-10-23, PASSED).
 # Copilot model availability is gated by plan AND integrator; the catalog's
 # policy:enabled flag is only a hint (models listed there still 400 on some
 # plans). gpt-4.1 sits first despite its scheduled retirement (GitHub's
@@ -107,7 +114,7 @@ MODEL_SHORTLISTS: dict[str, tuple[str, ...]] = {
         "google/gemini-2.0-flash-001",
         "meta-llama/llama-3.3-70b-instruct",
     ),
-    "openai": ("gpt-4o-mini", "gpt-4o", "o3-mini"),
+    "openai": ("gpt-6-luna", "gpt-5.6-luna", "gpt-4o-mini"),
     "anthropic": ("claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"),
     "copilot": (
         "gpt-4.1",
