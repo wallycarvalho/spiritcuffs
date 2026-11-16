@@ -158,7 +158,7 @@ Keys resolve in order: repo `.spc.toml` `llm.api_key` → user config
 
 Export your key: `export SPC_API_KEY=sk-...` (any OpenAI-compatible provider).
 
-### GitHub mining (step 2)
+### GitHub mining
 
 If `origin` points at GitHub, `spc learn` also mines **merged PRs and inline
 review comments** and distills them into your profile: recurring peer-review
