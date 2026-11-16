@@ -584,3 +584,172 @@ class TestUserAgent:
 
         monkeypatch.setattr(importlib.metadata, "version", boom)
         assert copilot._user_agent() == "spiritcuffs/dev"
+
+
+class TestGithubTokenStepUx:
+    """UX: PR mining is first-class — auto-detect + guided, Copilot clause kept."""
+
+    def _run(self, monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> str:
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr("spc.githubapi.resolve_token", lambda: None)
+        monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "")
+        console = _console()
+        run_setup(console, non_interactive=False, provider_key="openrouter",
+                  api_key="sk-x", skip_ping=True, **kwargs)
+        out = console.file.getvalue()
+        assert isinstance(out, str)
+        return out
+
+    def test_value_forward_prompt(self, user_config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The step always runs and leads with the value of PR mining."""
+        printed = self._run(monkeypatch)
+        assert "PR mining" in printed
+        assert "how your team" in printed
+
+    def test_gh_found_confirm_only_no_paste(
+        self, user_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gh CLI token → one-line confirmation, no menu, no paste prompt."""
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr("spc.githubapi.resolve_token", lambda: "gho_FROM_GH")
+        monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "")
+        console = _console()
+        run_setup(console, non_interactive=False, provider_key="openrouter",
+                  api_key="sk-x", skip_ping=True)
+        printed = console.file.getvalue()  # type: ignore[union-attr]
+        assert "your gh CLI token works" in printed
+        assert "no new token needed" in printed
+        assert "paste" not in printed.lower().replace("paste a personal", "")
+
+    def test_env_found_one_liner(
+        self, user_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GITHUB_TOKEN set → one-line confirmation naming the variable."""
+
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr("spc.githubapi.resolve_token", lambda: "gho_FROM_ENV")
+        monkeypatch.setenv("GITHUB_TOKEN", "gho_FROM_ENV")
+        monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "")
+        console = _console()
+        run_setup(console, non_interactive=False, provider_key="openrouter",
+                  api_key="sk-x", skip_ping=True)
+        printed = console.file.getvalue()  # type: ignore[union-attr]
+        assert "found GitHub token in $GITHUB_TOKEN" in printed
+        assert "mining will use it" in printed
+        monkeypatch.delenv("GITHUB_TOKEN")
+
+    def test_nothing_found_three_option_menu_gh_first(
+        self, user_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Nothing detected → guided menu: gh refresh (recommended) / PAT / skip."""
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr("spc.githubapi.resolve_token", lambda: None)
+        monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "")
+        monkeypatch.setattr(setup_mod.typer, "confirm", lambda *a, **k: False)
+        console = _console()
+        run_setup(console, non_interactive=False, provider_key="openrouter",
+                  api_key="sk-x", skip_ping=True)
+        printed = console.file.getvalue()  # type: ignore[union-attr]
+        assert "gh auth refresh" in printed
+        assert "recommended" in printed
+        assert "github.com/settings/tokens" in printed
+        assert "Contents: read" in printed
+        assert "skip for now" in printed
+        assert "git history only" in printed
+
+    def test_skip_still_possible(self, user_config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Choosing skip (empty menu input) exits 0 with the git-log-only note."""
+        printed = self._run(monkeypatch)
+        assert "git history only" in printed
+
+    def test_copilot_login_then_mining_step_says_different_token(
+        self, user_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After a fresh Copilot login, the guided menu carries the disclaimer."""
+        import spc.setup as setup_mod
+
+        def fake_login(console_print, sleep=lambda _s: None, client=None):
+            return "gho_DEVICE"
+
+        monkeypatch.setattr("spc.copilot.login", fake_login)
+        monkeypatch.setattr("spc.githubapi.resolve_token", lambda: None)
+        monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "")
+        console = _console()
+        exit_code = run_setup(
+            console, non_interactive=False, provider_key="copilot", skip_ping=True
+        )
+        printed = console.file.getvalue()  # type: ignore[union-attr]
+        assert exit_code == 0
+        assert "Different token than Copilot's" in printed
+        assert "gho_DEVICE" not in printed
+
+    def test_copilot_not_used_mining_step_has_no_disclaimer(
+        self, user_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a Copilot login this run, no 'different than Copilot' clause."""
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "")
+        console = _console()
+        run_setup(console, non_interactive=False, provider_key="openrouter",
+                  api_key="sk-x", skip_ping=True)
+        printed = console.file.getvalue()  # type: ignore[union-attr]
+        assert "Different token than Copilot's" not in printed
+
+    def test_stored_user_config_token_used_directly(
+        self, user_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored token short-circuits: used directly, no menu, no detect."""
+        import spc.setup as setup_mod
+
+        save_user_config(user_config_path(), github_token="ghp_STORED")
+        monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "")
+        console = _console()
+        run_setup(console, non_interactive=False, provider_key="openrouter",
+                  api_key="sk-x", skip_ping=True)
+        printed = console.file.getvalue()  # type: ignore[union-attr]
+        assert "using your stored token" in printed
+        assert "gh auth refresh" not in printed
+
+    def test_paste_choice_stores_token(
+        self, user_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Menu choice 2 → hidden paste → stored, mode-600 file."""
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr("spc.githubapi.resolve_token", lambda: None)
+        prompts: list[str] = []
+
+        def fake_prompt(message: str, *args: object, **kwargs: object) -> str:
+            prompts.append(str(message))
+            if "hidden" in str(message):
+                return "ghp_PASTED"
+            if "choice" in str(message):
+                return "2"  # menu: paste a personal access token
+            return ""
+
+        monkeypatch.setattr(setup_mod.typer, "prompt", fake_prompt)
+        monkeypatch.setattr(setup_mod.typer, "confirm", lambda *a, **k: False)
+        console = _console()
+        run_setup(console, non_interactive=False, provider_key="openrouter",
+                  api_key="sk-x", skip_ping=True)
+        printed = console.file.getvalue()  # type: ignore[union-attr]
+        assert "GitHub token stored" in printed
+        assert "ghp_PASTED" not in printed  # masked only
+        saved = load_user_config()
+        assert saved.github_token == "ghp_PASTED"
+
+    def test_non_interactive_step_notes_fallback(
+        self, user_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`-y` runs keep exit 0 and say mining falls back to git history."""
+        console = _console()
+        exit_code = run_setup(console, non_interactive=True, provider_key="openrouter",
+                              api_key="sk-x", skip_ping=True)
+        assert exit_code == 0
+        printed = console.file.getvalue()  # type: ignore[union-attr]
+        assert "git" in printed

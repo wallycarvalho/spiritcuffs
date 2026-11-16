@@ -8,6 +8,7 @@ wizard never crashes loudly and never writes secrets into the repo config.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -192,8 +193,11 @@ def _run_setup_inner(  # noqa: PLR0913 — a wizard genuinely has this many knob
         console, non_interactive, provider_key, base_url, api_key_env, user
     )
 
+    copilot_just_used = False
     if provider.kind == "copilot":
-        _step_copilot(console, non_interactive, provider, copilot_token=copilot_token)
+        copilot_just_used = _step_copilot(
+            console, non_interactive, provider, copilot_token=copilot_token
+        )
     else:
         _step_api_key(
             console, non_interactive, provider, user, api_key=api_key, api_key_env=api_key_env
@@ -202,6 +206,7 @@ def _run_setup_inner(  # noqa: PLR0913 — a wizard genuinely has this many knob
     _step_github_token(
         console, non_interactive, user,
         github_token=github_token, github_token_env=github_token_env,
+        copilot_just_used=copilot_just_used,
     )
     _step_preferences(console, non_interactive, strict=strict, show_nits=show_nits)
     if not skip_ping:
@@ -358,12 +363,14 @@ def _step_copilot(
     provider: Provider,
     *,
     copilot_token: str | None,
-) -> None:
+) -> bool:
     """Copilot auth: device-flow login (interactive) or --copilot-token (CI).
 
     Only the long-lived GitHub OAuth token is stored (user config, mode 600);
     the short-lived Copilot API token from the per-run exchange is never
-    persisted. GitHub Enterprise is not supported yet.
+    persisted. GitHub Enterprise is not supported yet. Returns True when a
+    Copilot token was stored THIS run (drives the mining step's "different
+    token than Copilot's" clarification).
     """
     from spc import copilot
     from spc.userconfig import resolve_copilot_token
@@ -381,28 +388,28 @@ def _step_copilot(
             f"[green]Copilot GitHub token stored[/] in {user_config_path()} "
             f"({mask_secret(copilot_token)})"
         )
-        return
+        return True
     if non_interactive:
         if existing:
             console.print(f"Copilot: using stored GitHub token ({mask_secret(existing)})")
-            return
+            return False
         console.print(
             "[yellow]Copilot selected but no GitHub token — run `spc setup` "
             "interactively for the device-flow login, or pass "
             "--copilot-token <github-oauth-token>.[/]"
         )
-        return
+        return False
     if existing and not typer.confirm(
         f"GitHub Copilot: a token is already stored ({mask_secret(existing)}). "
         "Log in again?",
         default=False,
     ):
-        return
+        return False
     try:
         oauth_token = copilot.login(console.print)
     except copilot.CopilotError as exc:
         console.print(f"[yellow]Copilot login failed:[/] {exc}")
-        return
+        return False
     save_user_config(
         user_config_path(),
         copilot_github_token=oauth_token,
@@ -414,6 +421,7 @@ def _step_copilot(
         f"[green]Copilot login complete[/] — token stored in {user_config_path()} "
         f"({mask_secret(oauth_token)})"
     )
+    return True
 
 
 def _step_model(
@@ -444,6 +452,74 @@ def _step_model(
     return chosen
 
 
+def _detect_github_token_source() -> tuple[str | None, str | None]:
+    """Auto-detect a mining token WITHOUT reading the stored user-config one.
+
+    Presentation-layer only: classifies what ``githubapi.resolve_token``
+    found (env → gh probe) as ``("env", name)`` or ``("gh", None)`` so the
+    wizard can say WHERE the token came from. Resolution logic itself is
+    untouched; nothing is stored.
+    """
+    from spc.githubapi import resolve_token
+
+    if resolve_token() is None:
+        return None, None
+    for env_name in ("GITHUB_TOKEN", "GH_TOKEN"):
+        if os.environ.get(env_name, "").strip():
+            return "env", env_name
+    return "gh", None
+
+
+def _guided_mining_token_choice(
+    console: Console, copilot_just_used: bool
+) -> None:
+    """No auto-detected token: offer refresh (recommended) / paste PAT / skip."""
+    console.print(
+        "  1. run `gh auth refresh` [dim](recommended — uses your existing gh"
+        " login, zero new storage; finish in the browser, then re-run `spc"
+        " setup` or pick this again to confirm detection)[/]"
+    )
+    console.print(
+        "  2. paste a PAT [dim](github.com/settings/tokens — fine-grained needs"
+        " Contents: read + Pull requests: read; classic needs repo)[/]"
+    )
+    console.print("  3. skip for now [dim](mining falls back to git history only)[/]")
+
+    def _copilot_clause() -> str:
+        return (
+            " [dim]Different token than Copilot's — Copilot's login only carries"
+            " read:user; mining needs repo read.[/]"
+            if copilot_just_used
+            else ""
+        )
+
+    choice = _choose_index(
+        [
+            "gh auth refresh — I'll re-run/confirm after",
+            "paste a personal access token",
+            "skip for now",
+        ],
+        f"how should PR mining get a token?{_copilot_clause()}",
+        console,
+    )
+    if choice == 1:
+        token = typer.prompt(
+            "GitHub token (hidden)", hide_input=True, default="", show_default=False
+        ).strip()
+        if not token:
+            console.print("[yellow]empty token — mining stays on git history only.[/]")
+            return
+        save_user_config(user_config_path(), github_token=token)
+        console.print(f"[green]GitHub token stored[/] ({mask_secret(token)})")
+        return
+    if choice == 0:
+        console.print(
+            "[dim]after `gh auth refresh` finishes in the browser, re-run `spc setup`"
+            " — detection will pick the gh token up automatically.[/]"
+        )
+    # choice None or 2: skip — mining falls back to git-log-only (option text said so)
+
+
 def _step_github_token(
     console: Console,
     non_interactive: bool,
@@ -451,8 +527,17 @@ def _step_github_token(
     *,
     github_token: str | None,
     github_token_env: str | None,
+    copilot_just_used: bool = False,
 ) -> None:
-    """Optional GitHub PAT storage (feeds step-2 mining); fully skip-able."""
+    """First-class PR-mining token step: auto-detect, else guided setup.
+
+    PR mining makes the profile reflect how your team reviews PRs, not just
+    what commits say — so the step always runs and leads with that value.
+    Auto-detect order here is presentation only (gh CLI vs env); the stored
+    user-config token is handled by the existing-token messaging above.
+    Copilot's OAuth token (read:user) can NOT mine PRs — hence the disclaimer
+    and, when needed, the guided choices.
+    """
     if github_token is not None:
         save_user_config(user_config_path(), github_token=github_token)
         console.print(f"[green]GitHub token stored[/] ({mask_secret(github_token)})")
@@ -464,17 +549,32 @@ def _step_github_token(
         )
         return
     if non_interactive:
+        console.print(
+            "[dim]PR mining: skipped (interactive step). Mining falls back to git"
+            " history only — re-run `spc setup` to enable it.[/]"
+        )
         return
-    if not typer.confirm("Store a GitHub token for PR mining? (optional)", default=False):
+    console.print(
+        "[bold]PR mining[/] [dim]— the profile then reflects how your team"
+        " reviews PRs, not just what commits say.[/]"
+    )
+    if user.github_token:
+        console.print(
+            f"[green]using your stored token[/] ({mask_secret(user.github_token)})"
+        )
         return
-    token = typer.prompt(
-        "GitHub token (hidden)", hide_input=True, default="", show_default=False
-    ).strip()
-    if not token:
-        console.print("[yellow]empty token — skipped.[/]")
+    source, env_name = _detect_github_token_source()
+    if source == "gh":
+        console.print(
+            "[dim]your gh CLI token works — mining will use it (no new token needed).[/]"
+        )
         return
-    save_user_config(user_config_path(), github_token=token)
-    console.print(f"[green]GitHub token stored[/] ({mask_secret(token)})")
+    if source == "env":
+        console.print(
+            f"[dim]found GitHub token in ${env_name} — mining will use it.[/]"
+        )
+        return
+    _guided_mining_token_choice(console, copilot_just_used)
 
 
 def _update_toml_section(text: str, section: str, updates: dict[str, str]) -> str:
