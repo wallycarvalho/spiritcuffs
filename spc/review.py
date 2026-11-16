@@ -15,7 +15,7 @@ from spc.conventions import ConventionFile
 from spc.copilot import CopilotError
 from spc.diff import DiffResult
 from spc.languages import EXTENSION_LANGUAGE, LANGUAGE_HINTS
-from spc.provider import resolve_provider_params
+from spc.provider import ProviderParams, resolve_provider_params
 
 MAX_FINDINGS = 10
 SEVERITY_ORDER = {"critical": 0, "warn": 1, "nit": 2}
@@ -248,14 +248,14 @@ def run_review(
     prompt = build_prompt(diff, profile, conventions, config, hotspot_paths=hotspot_paths)
     try:
 
-        base_url, api_key, extra_headers = _llm_call_params(config)
+        params = _llm_call_params(config)
         raw = llm.complete(
             [{"role": "user", "content": prompt}],
             model=config.llm.model,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=params.base_url,
+            api_key=params.api_key,
             timeout=config.llm.timeout,
-            extra_headers=extra_headers or None,
+            extra_headers=params.extra_headers or None,
         )
     except (llm.LlmError, CopilotError) as exc:
         console.print(f"[yellow]spiritcuffs:[/] LLM review failed ({exc}); continuing.")
@@ -264,8 +264,8 @@ def run_review(
     return output
 
 
-def _llm_call_params(config: SpcConfig) -> tuple[str, str | None, dict[str, str]]:
-    """(base_url, api_key, extra_headers) for the configured provider.
+def _llm_call_params(config: SpcConfig) -> ProviderParams:
+    """Resolved LLM call parameters for the configured provider.
 
     Thin wrapper over the shared resolver (spc/provider.py) so reviews, learn
     synthesis, clustering, and the setup ping all behave identically.

@@ -39,8 +39,11 @@ your Copilot entitlement, and stores only the long-lived GitHub OAuth token.
 Each review exchanges it for a short-lived API token that is never written to
 disk. CI: `spc setup -y --provider copilot --copilot-token <github-oauth-token>`
 (or export `COPILOT_GITHUB_TOKEN`). GitHub Enterprise is not supported yet.
-Copilot plan gates model access — the default `gpt-4.1-mini` is broadly
-available; override with `--model`.
+Copilot plan gates model access — the wizard default `claude-sonnet-4.6` is
+a broad-coverage GA chat model; override with `--model`. On plans where the
+token exchange is rejected (403/404 — e.g. older tokens), SpiritCuffs uses
+your long-lived OAuth token directly against the Copilot API host instead;
+a 401 (revoked token) raises and asks you to re-run `spc setup`.
 
 Then, inside any git repo:
 
@@ -79,6 +82,11 @@ Every later `git push` triggers `spc review` automatically.
 - **API keys / tokens** live in `~/.spc/config.toml` (mode 0600, outside any
   repo) or in your environment — never in the committed `.spc.toml`, never in
   `.spc/` artifacts, and they are masked in all output.
+- **Copilot tokens**: the long-lived OAuth token is exchanged per run for a
+  short-lived API token (never persisted). If the exchange is rejected with
+  403/404, that long-lived token is used *directly* against the Copilot API
+  host as a fallback (a 401 — revoked token — raises instead). Re-run
+  `spc setup` to mint a fresh, exchangeable token.
 - `.spc/` (profile, evidence) is gitignored; `.spc.toml` is meant to be committed.
 - Run history lives in `~/.spc/history/<repo>-<hash>.jsonl` — local only.
 

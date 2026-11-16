@@ -77,8 +77,9 @@ PROVIDERS: tuple[Provider, ...] = (
         # Base URL is per-run from the token exchange (endpoints.api); this
         # placeholder is overridden by the copilot auth path at call time.
         base_url="https://api.githubcopilot.com",
-        # Copilot plan gates model access; GA chat models per GitHub's
-        # supported-models table (gpt-4.1 retired 2026-06-01).
+        # Copilot plan gates model access; default is a broad-coverage GA
+        # chat model (gpt-4.1-mini is retired per GitHub's supported-models
+        # table, 2026-06-01).
         model="claude-sonnet-4.6",
         api_key_env="COPILOT_GITHUB_TOKEN",
         kind="copilot",
@@ -95,8 +96,10 @@ PROVIDERS: tuple[Provider, ...] = (
 # Curated shortlist per provider; free-text always wins over these.
 # Copilot model availability is gated by plan AND integrator; the catalog's
 # policy:enabled flag is only a hint (models listed there still 400 on some
-# plans). Entries here are broad-coverage chat-completions models; if one
-# 400s on your plan, the ping says so plainly — pick another.
+# plans). gpt-4.1 sits first despite its scheduled retirement (GitHub's
+# supported-models table, 2026-06-01) because it is live-verified working on
+# some plans — the menu is an offer, not a contract; if a pick 400s on your
+# plan, the ping says so plainly — choose another.
 MODEL_SHORTLISTS: dict[str, tuple[str, ...]] = {
     "openrouter": (
         "anthropic/claude-3.5-haiku",
@@ -703,15 +706,20 @@ def _ping(console: Console, model: str) -> None:
     repo_root = find_repo_root()
     config = load_config(repo_root) if repo_root is not None else None
     try:
-        base_url, api_key, extra_headers = resolve_provider_params(config)
+        params = resolve_provider_params(config)
+        if params.copilot_fallback:
+            console.print(
+                "[yellow]note:[/] using your OAuth token directly "
+                "(token exchange rejected) — re-run `spc setup` to re-auth."
+            )
         text = llm.complete(
             [{"role": "user", "content": "ping — reply with the single word: pong"}],
             model=model,
-            base_url=base_url,
-            api_key=api_key,
+            base_url=params.base_url,
+            api_key=params.api_key,
             timeout=15.0,
             attempts=1,
-            extra_headers=extra_headers or None,
+            extra_headers=params.extra_headers or None,
         )
     except (llm.LlmError, CopilotError) as exc:
         console.print(f"[yellow]connection test failed:[/] {exc}")

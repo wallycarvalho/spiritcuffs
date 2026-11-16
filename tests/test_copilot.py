@@ -244,6 +244,7 @@ class TestTokenExchange:
         result = copilot.exchange_token("ghu_X", _client(handler))
         assert result.token == "tid=abc;exp=1"
         assert result.api_base == "https://api.business.githubcopilot.com"
+        assert result.exchanged is True
 
     def test_exchange_falls_back_to_default_api_base(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -252,6 +253,7 @@ class TestTokenExchange:
         result = copilot.exchange_token("ghu_X", _client(handler))
         assert result.token == "tid=abc"
         assert result.api_base == copilot.FALLBACK_API_BASE
+        assert result.exchanged is True
 
     def test_exchange_404_falls_back_to_raw_token(self) -> None:
         """Legacy gho_ tokens get 404 — degrade to direct use (GA models work)."""
@@ -261,13 +263,27 @@ class TestTokenExchange:
         result = copilot.exchange_token("gho_X", _client(handler))
         assert result.token == "gho_X"
         assert result.api_base == copilot.FALLBACK_API_BASE
+        assert result.exchanged is False  # degraded mode must be observable
 
-    def test_exchange_401_falls_back_to_raw_token(self) -> None:
+    def test_exchange_403_falls_back_to_raw_token(self) -> None:
+        """403 (e.g. rate-limit policy) — same degraded fallback as 404."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, json={"message": "Forbidden"})
+
+        result = copilot.exchange_token("ghu_X", _client(handler))
+        assert result.token == "ghu_X"
+        assert result.exchanged is False
+
+    def test_exchange_401_raises_instead_of_masking(self) -> None:
+        """401 means the OAuth token itself is rejected — retrying it raw
+        cannot succeed; the user must re-login, so raise (don't mask)."""
+
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(401, json={"message": "Bad credentials"})
 
-        result = copilot.exchange_token("gho_X", _client(handler))
-        assert result.token == "gho_X"
+        with pytest.raises(copilot.CopilotError, match="re-login"):
+            copilot.exchange_token("ghu_X", _client(handler))
 
     def test_exchange_missing_token_raises(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -300,6 +316,38 @@ class TestPrepareLlmCall:
         llm_config = LlmConfig(provider="copilot")
         with pytest.raises(copilot.CopilotError, match="spc setup"):
             copilot.prepare_llm_call(llm_config, None)
+
+    def test_prepare_call_parts_returns_token_and_headers(self) -> None:
+        """Rich form: CopilotToken (with exchanged flag) + header dict."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json_response({"token": "tid=parts", "endpoints": {"api": "https://api.p.githubcopilot.com"}})
+
+        llm_config = LlmConfig(provider="copilot")
+        copilot_token, headers = copilot.prepare_call_parts(
+            llm_config, "ghu_X", _client(handler)
+        )
+        assert copilot_token.token == "tid=parts"
+        assert copilot_token.api_base == "https://api.p.githubcopilot.com"
+        assert copilot_token.exchanged is True
+        assert headers["Copilot-Integration-Id"] == "vscode-chat"
+
+    def test_prepare_llm_call_is_thin_wrapper_over_parts(self) -> None:
+        """The 3-tuple form must agree with the rich form."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json_response({"token": "tid=both"})
+
+        llm_config = LlmConfig(provider="copilot")
+        parts_token, parts_headers = copilot.prepare_call_parts(
+            llm_config, "ghu_X", _client(handler)
+        )
+        base_url, api_key, headers = copilot.prepare_llm_call(
+            llm_config, "ghu_X", _client(handler)
+        )
+        assert base_url == parts_token.api_base
+        assert api_key == parts_token.token
+        assert headers == parts_headers
 
 
 class TestLogin:
@@ -578,7 +626,7 @@ class TestProviderSwitch:
             captured["oauth"] = oauth_token
             raise copilot.CopilotError("exchange unreachable")
 
-        monkeypatch.setattr(copilot, "prepare_llm_call", fake_prepare)
+        monkeypatch.setattr(copilot, "prepare_call_parts", fake_prepare)
         console = _console()
         setup_mod._ping(console, model="claude-sonnet-4.6")  # provider arg removed
         assert captured["oauth"] == "gho_PING"

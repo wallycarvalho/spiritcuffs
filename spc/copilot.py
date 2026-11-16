@@ -77,10 +77,16 @@ class DeviceCode:
 
 @dataclass(frozen=True)
 class CopilotToken:
-    """Short-lived Copilot API token plus the base URL to call with it."""
+    """Short-lived Copilot API token plus the base URL to call with it.
+
+    ``exchanged`` is False when the raw OAuth token is being used directly
+    (exchange rejected with 403/404) — surfaced so the wizard can tell the
+    user to re-auth.
+    """
 
     token: str
     api_base: str
+    exchanged: bool = True
 
 
 def _headers() -> dict[str, str]:
@@ -206,9 +212,11 @@ def exchange_token(
     """Fetch a short-lived Copilot API token (GET copilot_internal/v2/token).
 
     The Copilot token must never be persisted — it lives for one run only.
-    If the exchange is rejected (401/403/404), fall back to using the OAuth
-    token directly — raw tokens work for some models; model availability is
-    plan- and integrator-gated either way.
+    If the exchange is rejected (403/404 — e.g. legacy ``gho_`` tokens minted
+    before the client-ID switch), fall back to using the OAuth token directly
+    — raw tokens work for some models; model availability is plan- and
+    integrator-gated either way. A 401 means the OAuth token itself is
+    rejected — that raises (using the same dead token again cannot succeed).
     """
     response = _get_authed(TOKEN_EXCHANGE_URI, oauth_token, client=client)
     body = _json(response)
@@ -220,21 +228,22 @@ def exchange_token(
             token=token,
             api_base=api_base if api_base else FALLBACK_API_BASE,
         )
-    if response.status_code in (401, 403, 404):
-        return CopilotToken(token=oauth_token, api_base=FALLBACK_API_BASE)
+    if response.status_code == 401:
+        raise CopilotError("OAuth token rejected by GitHub — run `spc setup` to re-login")
+    if response.status_code in (403, 404):
+        return CopilotToken(token=oauth_token, api_base=FALLBACK_API_BASE, exchanged=False)
     raise CopilotError("Copilot token exchange returned no token — try again")
 
 
-def prepare_llm_call(
+def prepare_call_parts(
     llm: LlmConfig, copilot_oauth_token: str | None, client: httpx.Client | None = None
-) -> tuple[str, str, dict[str, str]]:
-    """Resolve (base_url, api_key, extra_headers) for a Copilot run.
+) -> tuple[CopilotToken, dict[str, str]]:
+    """Resolve the Copilot token and required chat headers for a run.
 
     The OAuth token is exchanged for a short-lived Copilot token (never
-    persisted) and the required Copilot headers are attached; the base URL
-    comes from the exchange response's ``endpoints.api`` when present.
-    Raises :class:`CopilotError` when there is no OAuth token — the caller
-    fails soft.
+    persisted); the base URL comes from the exchange response's
+    ``endpoints.api`` when present. Raises :class:`CopilotError` when there
+    is no OAuth token — the caller fails soft.
     """
     if not copilot_oauth_token:
         raise CopilotError(
@@ -248,7 +257,19 @@ def prepare_llm_call(
         **COPILOT_CHAT_HEADERS,
         "User-Agent": USER_AGENT,
     }
-    return exchanged.api_base, exchanged.token, headers
+    return exchanged, headers
+
+
+def prepare_llm_call(
+    llm: LlmConfig, copilot_oauth_token: str | None, client: httpx.Client | None = None
+) -> tuple[str, str, dict[str, str]]:
+    """Resolve (base_url, api_key, extra_headers) for a Copilot run.
+
+    Thin 3-tuple form of :func:`prepare_call_parts` — the shape reviews,
+    learn, and the wizard's ping unpack.
+    """
+    copilot_token, headers = prepare_call_parts(llm, copilot_oauth_token, client)
+    return copilot_token.api_base, copilot_token.token, headers
 
 
 def _post(url: str, json: dict[str, str], client: httpx.Client | None) -> httpx.Response:
@@ -262,14 +283,14 @@ def _post(url: str, json: dict[str, str], client: httpx.Client | None) -> httpx.
 
 
 def _get_authed(
-    url: str, bearer: str, client: httpx.Client | None
+    url: str, token: str, client: httpx.Client | None
 ) -> httpx.Response:
     """Authenticated GET (token exchange); transport errors become CopilotError.
 
     Uses the ``token <tok>`` auth scheme — the scheme the VS Code client and
     every community integration use for ``copilot_internal`` endpoints.
     """
-    headers = {**_headers(), "Authorization": f"token {bearer}"}
+    headers = {**_headers(), "Authorization": f"token {token}"}
     try:
         if client is not None:
             return client.get(url, headers=headers)
@@ -295,8 +316,8 @@ def _positive_int(value: object, *, default: int) -> int:
 
 
 def login(
-    console_print: callable,  # type: ignore[assignment]
-    sleep: callable = time.sleep,  # type: ignore[assignment]
+    console_print: Callable[[str], None],
+    sleep: Callable[[float], None] = time.sleep,
     client: httpx.Client | None = None,
 ) -> str:
     """Interactive device-flow login; returns the long-lived GitHub OAuth token.
