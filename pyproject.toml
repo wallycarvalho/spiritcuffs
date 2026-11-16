@@ -9,8 +9,15 @@ description = "A lightweight local tool that reviews your code with an LLM befor
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "SpiritCuffs contributors" }]
 keywords = ["code-review", "llm", "git", "pre-push", "developer-tools"]
+dependencies = [
+    "httpx>=0.27",
+    "rich>=13.0",
+    "tomli-w>=1.0",
+    "typer>=0.12",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -21,12 +28,12 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Quality Assurance",
 ]
-dependencies = [
-    "httpx>=0.27",
-    "rich>=13.0",
-    "tomli-w>=1.0",
-    "typer>=0.12",
-]
+
+[project.urls]
+Homepage = "https://github.com/spiritcuffs/spiritcuffs"
+Repository = "https://github.com/spiritcuffs/spiritcuffs"
+Issues = "https://github.com/spiritcuffs/spiritcuffs/issues"
+Changelog = "https://github.com/spiritcuffs/spiritcuffs/blob/main/CHANGELOG.md"
 
 [project.scripts]
 spc = "spc.cli:app"

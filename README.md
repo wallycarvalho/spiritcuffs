@@ -2,9 +2,9 @@
 
 An LLM-powered second opinion on every `git push` — before it happens.
 
-SpiritCuffs learns your repo's standards from its git history, then reviews your
-pending diff with a tight rubric (bugs, security, data-loss — no style noise).
-It runs locally, in your terminal, in seconds.
+SpiritCuffs learns your repo's standards from its git history (and GitHub PR
+history), then reviews your pending diff with a tight rubric (bugs, security,
+data-loss — no style noise). It runs locally, in your terminal, in seconds.
 
 ```
 $ git push
@@ -21,27 +21,38 @@ spiritcuffs: reviewing 3 files…
 
 ```bash
 # run ad hoc (no install):
-uvx spiritcuffs init          # or: pipx install spiritcuffs && spc init
-
-# from source:
-uv tool install -e .
-spc init
+uvx spiritcuffs setup        # or: pipx install spiritcuffs && spc setup
+# or via npx (installs nothing but needs uv or pipx underneath):
+npx spiritcuffs setup
 ```
 
-`spc init` in any git repo:
+`spc setup` is a one-time wizard: pick a provider (OpenRouter, OpenAI,
+Anthropic, or a local endpoint), paste your API key (stored in
+`~/.spc/config.toml`, mode 600), pick a model, and it tests the connection.
+Scripted/CI variant: `spc setup --non-interactive --provider openrouter
+--api-key-env OPENROUTER_API_KEY --skip-ping`.
+
+Then, inside any git repo:
+
+```bash
+uvx spiritcuffs init         # writes .spc.toml + hook + profile + first review
+```
+
+`spc init`:
 
 1. writes `.spc.toml` (committed — it's your team's shared rubric),
 2. installs a `pre-push` hook (`spc hook --remove` to uninstall; `git push --no-verify` to bypass once),
 3. discovers conventions (`CONTRIBUTING.md`, `AGENTS.md`, lint configs),
-4. mines your git history (hotspots, bug clusters, test co-change) and synthesizes
-   `.spc/profile.md` — one LLM call,
+4. mines your git history (hotspots, bug clusters, test co-change) and GitHub
+   PR/review-comment history, then synthesizes `.spc/profile.md` — one LLM call,
 5. runs your **first review immediately**.
 
-Then every `git push` triggers `spc review` automatically. Plain commands:
+Every later `git push` triggers `spc review` automatically.
 
 | command | what it does |
 |---|---|
-| `spc init` | setup + learning + first review |
+| `spc setup` | onboarding wizard (provider, key, model, prefs) |
+| `spc init` | repo wiring + learning + first review |
 | `spc learn` | re-mine history, re-synthesize `.spc/profile.md` |
 | `spc review` | review upstream diff (staged fallback) — what the hook runs |
 | `spc history` | recent runs for this repo |
@@ -55,6 +66,9 @@ Then every `git push` triggers `spc review` automatically. Plain commands:
   and nothing leaves your machine.
 - A **local regex scan** checks the diff for obvious secrets *before* the LLM call.
   Set `block_on_secrets = true` to skip the LLM call entirely when one is suspected.
+- **API keys / tokens** live in `~/.spc/config.toml` (mode 0600, outside any
+  repo) or in your environment — never in the committed `.spc.toml`, never in
+  `.spc/` artifacts, and they are masked in all output.
 - `.spc/` (profile, evidence) is gitignored; `.spc.toml` is meant to be committed.
 - Run history lives in `~/.spc/history/<repo>-<hash>.jsonl` — local only.
 
@@ -67,6 +81,9 @@ Every knob has a working default:
 base_url = "https://openrouter.ai/api/v1"   # any OpenAI-compatible endpoint
 model = "anthropic/claude-3.5-haiku"        # fast/cheap default; your choice
 api_key_env = "SPC_API_KEY"                 # env var holding the key
+api_key = ""                                # optional inline key — DON'T commit
+                                            # secrets here; prefer `spc setup`
+timeout = 30.0                              # seconds; caps each LLM attempt
 
 [review]
 show_nits = false          # nits hidden by default (signal, not noise)
@@ -91,6 +108,11 @@ github_max_prs = 200       # merged-PR cap per mining run
 github_max_comments = 1000 # inline-comment cap per mining run
 github_pages_max = 10      # pagination ceiling per endpoint
 ```
+
+Keys resolve in order: repo `.spc.toml` `llm.api_key` → user config
+`~/.spc/config.toml` (written by `spc setup`) → the env var named by
+`api_key_env`. GitHub tokens: user config `github.token` → `GITHUB_TOKEN` →
+`GH_TOKEN` → `gh auth token`.
 
 Export your key: `export SPC_API_KEY=sk-...` (any OpenAI-compatible provider).
 
@@ -126,12 +148,31 @@ receive the token either.
 - **Never invents findings**: hotspot files get mentioned with slightly higher
   scrutiny, but the rubric forbids inventing issues.
 
+## FAQ / troubleshooting
+
+**No API key configured** — reviews fail soft: a one-line warning, exit 0,
+your push goes through. Run `spc setup` (or `export SPC_API_KEY=sk-...`).
+
+**A review blocked my push** — that only happens with `strict = true` plus a
+critical finding. Fix it, or bypass once with `git push --no-verify`.
+
+**Stale profile notice** — `.spc/profile.md` is older than
+`profile_max_age_days` (30). Re-run `spc learn` when convenient; reviews
+continue with the stale profile meanwhile. Learning is never triggered inside
+the push path.
+
+**CI**: skip the hook entirely — SpiritCuffs is a local dev tool. For scripted
+setup use `spc setup --non-interactive --provider <p> --api-key-env <VAR>
+--skip-ping`.
+
+**Windows**: the pre-push hook runs via `sh` (Git for Windows ships one);
+Python must be on PATH in that shell.
+
 ## Roadmap
 
 - **v1 (this)**: local harness — git + GitHub PR/comment mining, LLM profile,
-  push review
-- **v1.1**: npm wrapper (`spiritcuffs`) for `npx` users
-- **v1.5**: feedback marking in `spc history`; doc generation
+  push review, setup wizard, npm wrapper
+- **v1.1**: feedback marking in `spc history`; keychain/keyring storage for keys
 - **v2**: calibration engine learning from your accept/dismiss feedback
 
 ## Development
