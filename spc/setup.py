@@ -175,6 +175,11 @@ def run_setup(
     except (KeyboardInterrupt, EOFError, typer.Abort):
         console.print("\n[yellow]spiritcuffs: setup cancelled — nothing was broken.[/]")
         return 0
+    except typer.Exit:
+        # spc init (run from the wizard) ends with `raise typer.Exit(code)` —
+        # that's a normal completion signal, not an error. Re-raise so typer
+        # exits with the real code instead of printing "error (0)".
+        raise
     except Exception as exc:  # noqa: BLE001 — the wizard must never crash loudly
         console.print(f"[yellow]spiritcuffs: setup hit an error ({exc}) — exiting.[/]")
         return 0
