@@ -226,3 +226,9 @@ uv run ruff check spc tests
 ```
 
 MIT licensed. Source: https://github.com/wallycarvalho/spiritcuffs
+
+## Releasing
+
+Run `python3 scripts/release.py patch` (or `minor` / `major`) — it bumps the
+version everywhere and rewrites `CHANGELOG.md`. Eyeball the changelog, then
+run the git + `uv publish` commands the script prints.
