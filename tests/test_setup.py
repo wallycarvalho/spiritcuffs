@@ -7,6 +7,7 @@ import stat
 from pathlib import Path
 
 import pytest
+import typer
 from rich.console import Console
 
 from spc.config import LlmConfig, load_config
@@ -250,15 +251,18 @@ def test_repo_wiring_interactive_confirm_runs_init_inside_git_repo(
 
     monkeypatch.setattr(setup_mod.typer, "confirm", lambda *a, **k: True)
     monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "")
-    exit_code = run_setup(
-        _console(),
-        non_interactive=False,
-        provider_key="openrouter",
-        api_key="sk-test-1234567890abcd",
-        model="anthropic/claude-3.5-haiku",
-        skip_ping=True,
-    )
-    assert exit_code == 0
+    with pytest.raises(typer.Exit) as exc_info:
+        run_setup(
+            _console(),
+            non_interactive=False,
+            provider_key="openrouter",
+            api_key="sk-test-1234567890abcd",
+            model="anthropic/claude-3.5-haiku",
+            skip_ping=True,
+        )
+    # embedded `spc init` ends with raise typer.Exit(code) — a successful
+    # completion signal that must propagate, not be swallowed as an error
+    assert exc_info.value.exit_code == 0
     assert (tmp_path / ".spc.toml").is_file()
 
 
