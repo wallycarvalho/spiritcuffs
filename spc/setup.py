@@ -12,7 +12,6 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-import tomli_w
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -146,7 +145,7 @@ def run_setup(
             show_nits=show_nits,
             skip_ping=skip_ping,
         )
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, EOFError, typer.Abort):
         console.print("\n[yellow]spiritcuffs: setup cancelled — nothing was broken.[/]")
         return 0
     except Exception as exc:  # noqa: BLE001 — the wizard must never crash loudly
@@ -375,6 +374,40 @@ def _step_github_token(
     console.print(f"[green]GitHub token stored[/] ({mask_secret(token)})")
 
 
+def _update_toml_section(text: str, section: str, updates: dict[str, str]) -> str:
+    """Set keys inside one TOML section, preserving comments and all other bytes.
+
+    Values arrive pre-rendered (e.g. "true", "false"). Missing keys are appended
+    at the end of the section; a missing section is appended at the end of the file.
+    """
+    lines = text.splitlines()
+    section_start = None
+    section_end = len(lines)  # a section runs until the next [header] or EOF
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if section_start is None:
+            if stripped == f"[{section}]":
+                section_start = index
+        elif stripped.startswith("[") and stripped.endswith("]"):
+            section_end = index
+            break
+    if section_start is None:
+        block = [f"[{section}]"] + [f"{key} = {value}" for key, value in updates.items()]
+        return "\n".join(lines + block) + "\n"
+    for key, value in updates.items():
+        key_line = next(
+            (i for i in range(section_start + 1, section_end) if lines[i].startswith(f"{key} ")),
+            None,
+        )
+        if key_line is not None:
+            comment = lines[key_line].split("#", 1)[1] if "#" in lines[key_line] else None
+            lines[key_line] = f"{key} = {value}  #{comment}" if comment else f"{key} = {value}"
+        else:
+            lines.insert(section_end, f"{key} = {value}")
+            section_end += 1
+    return "\n".join(lines) + "\n"
+
+
 def _step_preferences(
     console: Console,
     non_interactive: bool,
@@ -382,31 +415,34 @@ def _step_preferences(
     strict: bool | None,
     show_nits: bool | None,
 ) -> None:
-    """Persist review preferences into the repo .spc.toml when one exists."""
+    """Persist review preferences into the repo .spc.toml when one exists.
+
+    Edits only the affected key lines — a parse-and-rewrite via tomli_w would
+    strip the comments that make the committed config self-documenting.
+    """
     repo = Path.cwd()
     path = repo / ".spc.toml"
     if not path.is_file():
         if not non_interactive:
             console.print("[dim]no .spc.toml here — preferences will be set by `spc init`.[/]")
         return
-    try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
-        console.print("[yellow]spiritcuffs: could not parse .spc.toml — skipping preferences.[/]")
-        return
-    review = raw.setdefault("review", {})
     if strict is None and not non_interactive:
         strict = typer.confirm("strict mode (exit 1 on critical findings)?", default=False)
     if show_nits is None and not non_interactive:
         show_nits = typer.confirm("show nit-level findings?", default=False)
+    updates: dict[str, str] = {}
     if strict is not None:
-        review["strict"] = bool(strict)
+        updates["strict"] = str(bool(strict)).lower()
     if show_nits is not None:
-        review["show_nits"] = bool(show_nits)
+        updates["show_nits"] = str(bool(show_nits)).lower()
+    if not updates:
+        return
     try:
-        path.write_text(tomli_w.dumps(raw), encoding="utf-8")
-    except OSError:
-        console.print("[yellow]spiritcuffs: could not write .spc.toml — skipping.[/]")
+        text = path.read_text(encoding="utf-8")
+        tomllib.loads(text)  # refuse to touch a config we can't parse
+        path.write_text(_update_toml_section(text, "review", updates), encoding="utf-8")
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        console.print("[yellow]spiritcuffs: could not update .spc.toml — skipping.[/]")
 
 
 def _ping(console: Console, base_url: str, model: str) -> None:

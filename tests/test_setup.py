@@ -259,3 +259,33 @@ def test_resolve_api_key_uses_stored_key_after_setup(
     )
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     assert resolve_api_key(LlmConfig(api_key_env="OPENROUTER_API_KEY")) == "sk-e2e-1234567890"
+
+
+def test_preferences_preserve_comments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Targeted key-line edits must not strip the config's comments (tomli_w rewrite did)."""
+    _no_ping(monkeypatch)
+    original = (
+        "[llm]\n"
+        'base_url = "https://x"  # keep me\n'
+        "\n"
+        "[review]\n"
+        "strict = false  # inline comment survives\n"
+        "show_nits = false\n"
+    )
+    (tmp_path / ".spc.toml").write_text(original, encoding="utf-8")
+    run_setup(_console(), non_interactive=True, strict=True, skip_ping=True)
+    text = (tmp_path / ".spc.toml").read_text(encoding="utf-8")
+    assert "# keep me" in text
+    assert "# inline comment survives" in text
+    assert "strict = true" in text
+    assert "show_nits = false" in text
+
+
+def test_preferences_append_missing_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_ping(monkeypatch)
+    (tmp_path / ".spc.toml").write_text("[llm]\nbase_url = \"https://x\"\n", encoding="utf-8")
+    run_setup(_console(), non_interactive=True, strict=True, show_nits=True, skip_ping=True)
+    text = (tmp_path / ".spc.toml").read_text(encoding="utf-8")
+    assert "[review]" in text
+    assert "strict = true" in text
+    assert "show_nits = true" in text
