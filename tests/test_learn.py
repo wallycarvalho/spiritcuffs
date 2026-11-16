@@ -97,3 +97,58 @@ def test_learn_prompt_never_contains_file_contents(git_repo, monkeypatch, quiet_
     assert prompts, "synthesis must be called"
     assert secret_value not in prompts[0]
     assert 'key = "' not in prompts[0]
+
+
+def test_synthesis_prompt_omits_stats_only_fields(git_repo, monkeypatch, quiet_console) -> None:
+    """Language proportions / test co-change live in evidence.json, not the prompt.
+
+    Restating them is what made profiles generic — the LLM parroted the stats
+    back ("Python 75.6%") instead of surfacing learned review knowledge.
+    """
+    import spc.profile as profile_mod
+
+    repo = git_repo({"src/a.py": "a=1\n"})
+    prompts = []
+
+    def fake_complete(messages, *, model, base_url, api_key, **kw):  # noqa: ANN001, ANN003
+        prompts.append(messages[-1]["content"])
+        return "# p"
+
+    monkeypatch.setattr(profile_mod.llm, "complete", fake_complete)
+    run_learn(repo, SpcConfig(), quiet_console)
+    assert prompts, "synthesis must be called"
+    assert "language_proportions" not in prompts[0]
+    assert "test_co_change_ratio" not in prompts[0]
+
+
+def test_synthesis_system_bans_generic_advice() -> None:
+    """The ban list must survive future edits to the system prompt.
+
+    Generic, true-of-every-repo advice ("ensure tests accompany changes") was
+    the other half of the useless-profile problem; these assertions pin the
+    ban so a refactor can't silently drop it.
+    """
+    from spc.profile import _SYNTHESIS_SYSTEM
+
+    assert "any repository" in _SYNTHESIS_SYSTEM
+    assert "ensure tests" in _SYNTHESIS_SYSTEM
+    assert "keep documentation up to date" in _SYNTHESIS_SYSTEM
+    assert "regressions in complex code" in _SYNTHESIS_SYSTEM
+    assert "Do NOT include statistics" in _SYNTHESIS_SYSTEM
+    assert "Do NOT state language composition" in _SYNTHESIS_SYSTEM
+    # The evidence-backed-over-padded contract, and the required sections.
+    assert "beats a padded one" in _SYNTHESIS_SYSTEM
+    for section in ("Peer review themes", "Recurring bug patterns", "Non-obvious conventions", "What to double-check"):
+        assert section in _SYNTHESIS_SYSTEM
+
+
+def test_cluster_system_asks_for_checkable_rules() -> None:
+    """Clustering must surface repo-specific rules, not just topic counts."""
+    from spc.githubhistory import _CLUSTER_SYSTEM
+
+    assert "rules" in _CLUSTER_SYSTEM
+    assert "check a diff against" in _CLUSTER_SYSTEM
+    # Safety rules survive the extension.
+    assert "never quote" in _CLUSTER_SYSTEM
+    assert "never mention authors" in _CLUSTER_SYSTEM
+    assert "under 200 words" in _CLUSTER_SYSTEM

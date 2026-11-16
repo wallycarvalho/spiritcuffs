@@ -330,9 +330,14 @@ _CLUSTER_SYSTEM = (
     "Input: merged PR titles and inline review comments from peers. Output: a "
     "short markdown section listing the recurring review themes (what reviewers "
     "repeatedly ask for), each with a brief count of how often it appeared. "
-    "Rules: synthesize — never quote comments verbatim, never mention authors, "
-    "never include code snippets or secrets. Keep it under 200 words. If the "
-    "evidence is too thin to find themes, say so in one sentence."
+    "When the titles/comments reveal repo-specific rules or conventions — "
+    "ordering requirements, forbidden patterns, required process (e.g. "
+    "migration before code), maintainer-approval gates — surface those as "
+    "explicit \"rules\" items: something a reviewer could check a diff "
+    "against, not just topic frequencies. Rules: synthesize — never quote "
+    "comments verbatim, never mention authors, never include code snippets or "
+    "secrets. Keep it under 200 words. If the evidence is too thin to find "
+    "themes, say so in one sentence."
 )
 
 

@@ -139,12 +139,14 @@ Export your key: `export SPC_API_KEY=sk-...` (any OpenAI-compatible provider).
 ### GitHub mining (step 2)
 
 If `origin` points at GitHub, `spc learn` also mines **merged PRs and inline
-review comments** and distills recurring peer-review themes ("tests not
-updated", "missing error handling", …) into your profile. Watermark-
-incremental: re-runs fetch only PRs newer than the last run. Rate-limit aware,
-capped per run, and strictly fail-soft — any GitHub error downgrades to
-git-only learning with a one-line notice. Only synthesized **themes** enter
-`.spc/profile.md`; raw comments stay in the gitignored `.spc/evidence.json`.
+review comments** and distills them into your profile: recurring peer-review
+themes plus explicit repo **rules** a diff can be checked against (ordering
+requirements, forbidden patterns, required process — e.g. migration before
+code). Watermark-incremental: re-runs fetch only PRs newer than the last run.
+Rate-limit aware, capped per run, and strictly fail-soft — any GitHub error
+downgrades to git-only learning with a one-line notice. Only synthesized
+**themes** enter `.spc/profile.md`; raw comments stay in the gitignored
+`.spc/evidence.json`.
 
 ### Token safety (GitHub Enterprise)
 

@@ -178,21 +178,36 @@ _SYNTHESIS_SYSTEM = (
     "You are a senior engineer summarizing a repository's review standards. "
     "Write a concise, human-readable profile in markdown. Use ONLY the structured "
     "evidence given — never invent findings, never include file contents or secrets. "
-    "Keep it under 400 words. Structure: a two-sentence overview, then bullet "
-    "points for hotspots, historical bug clusters, test expectations, languages, "
-    "and what future reviews should watch for."
+    "Keep it under 400 words; a short profile with only evidence-backed content "
+    "beats a padded one.\n"
+    "Structure (in this order, omit any section whose evidence is thin rather "
+    "than padding it):\n"
+    "1. **Peer review themes** — what human reviewers repeatedly flag in this "
+    "repo (from PR comment themes when present). This is the headline section.\n"
+    "2. **Recurring bug patterns** — specific failure modes tied to where they "
+    "recur (e.g. \"N+1 queries in api/\"), not generic watchfulness.\n"
+    "3. **Non-obvious conventions** — only things a newcomer could NOT guess "
+    "from reading the code.\n"
+    "4. **What to double-check** — concrete, repo-specific checks (e.g. \"when "
+    "touching src/db/, verify migration parity\"), not generic advice.\n"
+    "Do NOT include statistics. Do NOT state language composition. Do NOT give "
+    "advice that would be equally true of any repository (e.g. \"ensure tests "
+    "accompany changes\", \"keep documentation up to date\", \"watch for "
+    "regressions in complex code\")."
 )
 
 
 def _render_synthesis_prompt(evidence: GitEvidence, extra_evidence_md: str) -> str:
-    """Render the git-evidence JSON (+ optional extra section) for the synthesis call."""
+    """Render the git-evidence JSON (+ optional extra section) for the synthesis call.
+
+    Language proportions and test co-change stats are deliberately omitted —
+    they invite the model to restate numbers (the exact generic padding the
+    profile must not contain). They remain in evidence.json for the curious.
+    """
     evidence_json = json.dumps(
         {
             "hotspots": evidence.hotspots,
             "bug_classes": evidence.bug_classes,
-            "test_dirs": evidence.test_dirs,
-            "test_co_change_ratio": evidence.test_co_change_ratio,
-            "language_proportions": evidence.language_proportions,
             "commits_scanned": evidence.commits_scanned,
             "total_files_tracked": evidence.total_files_tracked,
         },
