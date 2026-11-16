@@ -66,6 +66,8 @@ First public release: a local, LLM-powered second opinion on every `git push`.
 - Diff truncation with a dropped-files list (never silently truncated).
 - npm wrapper (`npx spiritcuffs`) — resolves `uvx` or `pipx` and forwards
   argv/stdio/exit codes; prints a one-line install hint otherwise.
+  *(removed post-0.1.1 — distribution is uv/pipx only; restore from git
+  history if npm returns)*
 - Token safety: the GitHub token is attached only to `api.github.com` or the
   origin remote's own host (GHE), https-only — never to a repo-committed
   `base_url` pointing elsewhere.
