@@ -34,7 +34,12 @@ def _user_agent() -> str:
 
 USER_AGENT = _user_agent()
 
-CLIENT_ID = "Ov23li5Rr1rgjMTpz5am"
+# The exchange endpoint (copilot_internal/v2/token) only accepts ghu_ tokens
+# minted by GitHub *Apps*. The Copilot CLI GitHub App (Iv1.b507a08c87ecfe98)
+# is the community-standard client for this (aider, continue.dev, opencode's
+# Copilot CLI app, hermes-agent); custom OAuth Apps mint gho_ tokens which the
+# exchange rejects with 404 regardless of the user's Copilot plan.
+CLIENT_ID = "Iv1.b507a08c87ecfe98"
 DEVICE_CODE_URI = "https://github.com/login/device/code"
 TOKEN_URI = "https://github.com/login/oauth/access_token"
 ENTITLEMENT_URI = "https://api.github.com/copilot_internal/user"
@@ -197,20 +202,26 @@ def exchange_token(
     """Trade the long-lived OAuth token for a short-lived Copilot API token.
 
     The Copilot token must never be persisted — it lives for one run only.
+    If the exchange is rejected (e.g. legacy ``gho_`` tokens minted before the
+    client-ID switch, which the endpoint answers with 404), fall back to using
+    the OAuth token directly — that works for GA models, only preview models
+    require an exchanged session token.
     """
     response = _post_authed(
         TOKEN_EXCHANGE_URI, oauth_token, client=client
     )
     body = _json(response)
     token = body.get("token")
-    if not isinstance(token, str) or not token:
-        raise CopilotError("Copilot token exchange returned no token — try again")
-    endpoints = body.get("endpoints") if isinstance(body.get("endpoints"), dict) else {}
-    api_base = endpoints.get("api") if isinstance(endpoints.get("api"), str) else None
-    return CopilotToken(
-        token=token,
-        api_base=api_base if api_base else FALLBACK_API_BASE,
-    )
+    if isinstance(token, str) and token:
+        endpoints = body.get("endpoints") if isinstance(body.get("endpoints"), dict) else {}
+        api_base = endpoints.get("api") if isinstance(endpoints.get("api"), str) else None
+        return CopilotToken(
+            token=token,
+            api_base=api_base if api_base else FALLBACK_API_BASE,
+        )
+    if response.status_code in (401, 403, 404):
+        return CopilotToken(token=oauth_token, api_base=FALLBACK_API_BASE)
+    raise CopilotError("Copilot token exchange returned no token — try again")
 
 
 def prepare_llm_call(
@@ -251,8 +262,13 @@ def _post(url: str, json: dict[str, str], client: httpx.Client | None) -> httpx.
 def _post_authed(
     url: str, bearer: str, client: httpx.Client | None
 ) -> httpx.Response:
-    """Authenticated POST (token exchange); transport errors become CopilotError."""
-    headers = {**_headers(), "Authorization": f"Bearer {bearer}"}
+    """Authenticated POST (token exchange); transport errors become CopilotError.
+
+    Uses the ``token <tok>`` auth scheme — ``Bearer`` is rejected by the
+    ``copilot_internal`` exchange for some token types (opencode's evidence
+    table: ghu_ + ``token`` → 200, gho_ + either → 404).
+    """
+    headers = {**_headers(), "Authorization": f"token {bearer}"}
     try:
         if client is not None:
             return client.post(url, json={}, headers=headers)

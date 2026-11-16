@@ -57,7 +57,7 @@ class TestDeviceFlow:
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url == httpx.URL(copilot.DEVICE_CODE_URI)
             body = request.read().decode()
-            assert "Ov23li5Rr1rgjMTpz5am" in body
+            assert "Iv1.b507a08c87ecfe98" in body
             assert "read:user" in body
             return _json_response(
                 {
@@ -232,7 +232,7 @@ class TestTokenExchange:
     def test_exchange_parses_token_and_api_base(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url == httpx.URL(copilot.TOKEN_EXCHANGE_URI)
-            assert request.headers["Authorization"] == "Bearer gho_X"
+            assert request.headers["Authorization"] == "token ghu_X"
             return _json_response(
                 {
                     "token": "tid=abc;exp=1",
@@ -241,7 +241,7 @@ class TestTokenExchange:
                 }
             )
 
-        result = copilot.exchange_token("gho_X", _client(handler))
+        result = copilot.exchange_token("ghu_X", _client(handler))
         assert result.token == "tid=abc;exp=1"
         assert result.api_base == "https://api.business.githubcopilot.com"
 
@@ -249,16 +249,32 @@ class TestTokenExchange:
         def handler(request: httpx.Request) -> httpx.Response:
             return _json_response({"token": "tid=abc"})
 
-        result = copilot.exchange_token("gho_X", _client(handler))
+        result = copilot.exchange_token("ghu_X", _client(handler))
         assert result.token == "tid=abc"
         assert result.api_base == copilot.FALLBACK_API_BASE
+
+    def test_exchange_404_falls_back_to_raw_token(self) -> None:
+        """Legacy gho_ tokens get 404 — degrade to direct use (GA models work)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404, json={"message": "Not Found"})
+
+        result = copilot.exchange_token("gho_X", _client(handler))
+        assert result.token == "gho_X"
+        assert result.api_base == copilot.FALLBACK_API_BASE
+
+    def test_exchange_401_falls_back_to_raw_token(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, json={"message": "Bad credentials"})
+
+        result = copilot.exchange_token("gho_X", _client(handler))
+        assert result.token == "gho_X"
 
     def test_exchange_missing_token_raises(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return _json_response({"error": "nope"})
 
         with pytest.raises(copilot.CopilotError, match="no token"):
-            copilot.exchange_token("gho_X", _client(handler))
+            copilot.exchange_token("ghu_X", _client(handler))
 
 
 class TestPrepareLlmCall:
