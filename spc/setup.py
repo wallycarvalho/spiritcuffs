@@ -93,8 +93,9 @@ PROVIDERS: tuple[Provider, ...] = (
 )
 
 # Curated shortlist per provider; free-text always wins over these.
-# Copilot entries per GitHub's supported-models table (2026-11): all GA,
-# chat-completions-capable, broadest plan coverage.
+# Copilot entries per GitHub's supported-models table (2026-11), filtered to
+# models that serve /chat/completions: GPT-5.x and later are /responses-only
+# (they 400 model_not_supported on chat/completions), Claude/Gemini/Kimi work.
 MODEL_SHORTLISTS: dict[str, tuple[str, ...]] = {
     "openrouter": (
         "anthropic/claude-3.5-haiku",
@@ -107,7 +108,6 @@ MODEL_SHORTLISTS: dict[str, tuple[str, ...]] = {
     "copilot": (
         "claude-sonnet-4.6",
         "claude-haiku-4.5",
-        "gpt-5.6-luna",
         "gemini-3.8-flash",
     ),
     "ollama": ("llama3.1", "qwen2.5-coder", "mistral"),
