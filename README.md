@@ -23,8 +23,8 @@ Two one-time commands, then it just runs on every push:
 
 ```bash
 # 1) authenticate — run once per machine, pick ONE of these:
-uvx spiritcuffs setup        # or: pipx install spiritcuffs && spc setup
 npx spiritcuffs setup        # npm users: same wizard, no separate install step
+uvx --from spiritcuffs spc setup   # or: pipx install spiritcuffs && spc setup
 ```
 
 The wizard picks a provider (OpenRouter, OpenAI, Anthropic, GitHub Copilot, or
@@ -36,7 +36,7 @@ below.
 
 ```bash
 # 2) wire up a repo — run once per repo, same launcher as step 1:
-npx spiritcuffs init         # or: uvx spiritcuffs init / spc init
+npx spiritcuffs init         # or: uvx --from spiritcuffs spc init / spc init
 ```
 
 `spc init`:
@@ -50,8 +50,8 @@ npx spiritcuffs init         # or: uvx spiritcuffs init / spc init
 
 Every later `git push` triggers `spc review` automatically. You can always
 invoke the same launcher interchangeably — `npx spiritcuffs <cmd>`,
-`uvx spiritcuffs <cmd>`, or bare `spc <cmd>` if pipx-installed — all three run
-the identical CLI.
+`uvx --from spiritcuffs spc <cmd>`, or bare `spc <cmd>` if pipx-installed —
+all three run the identical CLI.
 
 | command | what it does |
 |---|---|
