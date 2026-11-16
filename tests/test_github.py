@@ -516,7 +516,7 @@ def test_learn_enabled_false_never_mines(git_repo, monkeypatch, quiet_console) -
         raise AssertionError("network mining must not run when enabled=false")
 
     monkeypatch.setattr("spc.githubhistory.mine_github", forbidden)
-    monkeypatch.setattr("spc.githubhistory.resolve_token", lambda: None)
+    monkeypatch.setattr("spc.userconfig.resolve_github_token", lambda: None)
 
     def fake_complete(messages, *, model, base_url, api_key, **kw):  # noqa: ANN001, ANN003
         return "# Profile"

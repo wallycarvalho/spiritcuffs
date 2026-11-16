@@ -288,6 +288,55 @@ def version() -> None:
     console.print(f"spiritcuffs {__version__}")
 
 
+@app.command()
+def setup(
+    non_interactive: bool = typer.Option(
+        False, "--non-interactive", "-y", help="No prompts; use flags + stored config."
+    ),
+    provider: str | None = typer.Option(
+        None, "--provider", help="openrouter | openai | anthropic | ollama"
+    ),
+    api_key: str | None = typer.Option(
+        None, "--api-key", help="API key value (stored user-level, mode 600)."
+    ),
+    api_key_env: str | None = typer.Option(
+        None, "--api-key-env", help="Env var NAME to use instead of storing the key."
+    ),
+    model: str | None = typer.Option(None, "--model", help="Model id override."),
+    base_url: str | None = typer.Option(None, "--base-url", help="OpenAI-compatible base URL."),
+    github_token: str | None = typer.Option(
+        None, "--github-token", help="GitHub PAT (stored user-level, mode 600)."
+    ),
+    github_token_env: str | None = typer.Option(
+        None, "--github-token-env", help="GitHub token env var NAME (not stored on disk)."
+    ),
+    strict: bool | None = typer.Option(None, "--strict/--no-strict", help="Review strict mode."),
+    show_nits: bool | None = typer.Option(
+        None, "--nits/--no-nits", help="Show nit-level findings."
+    ),
+    skip_ping: bool = typer.Option(False, "--skip-ping", help="Skip the connection test."),
+) -> None:
+    """Interactive onboarding: provider, key, model, preferences, connection test."""
+    from spc.setup import run_setup
+
+    raise typer.Exit(
+        run_setup(
+            console,
+            non_interactive=non_interactive,
+            provider_key=provider,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            model=model,
+            base_url=base_url,
+            github_token=github_token,
+            github_token_env=github_token_env,
+            strict=strict,
+            show_nits=show_nits,
+            skip_ping=skip_ping,
+        )
+    )
+
+
 def main() -> None:
     """Console-script entrypoint."""
     app()

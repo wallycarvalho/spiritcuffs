@@ -23,7 +23,6 @@ from spc.githubapi import (
     RateLimitedError,
     parse_github_remote,
     remote_host,
-    resolve_token,
     split_owner_repo_from_path,
 )  # Caps on what enters the ONE theme-clustering LLM call.
 
@@ -216,7 +215,9 @@ def mine_github(
         if client_factory is not None:
             client = client_factory(caps)
         else:
-            client = GithubClient(resolve_token(), caps, origin_host=origin_host)
+            from spc.userconfig import resolve_github_token
+
+            client = GithubClient(resolve_github_token(), caps, origin_host=origin_host)
         try:
             return _mine_with_client(client, owner, repo_name, previous)
         except GithubApiError:
@@ -306,7 +307,8 @@ def cluster_themes(evidence: GithubEvidence, config: SpcConfig) -> str | None:
     if not evidence.pulls and not evidence.comments:
         return None
     try:
-        api_key = llm.resolve_api_key(config.llm.api_key_env)
+        from spc.userconfig import resolve_api_key
+
         return llm.complete(
             [
                 {"role": "system", "content": _CLUSTER_SYSTEM},
@@ -314,7 +316,7 @@ def cluster_themes(evidence: GithubEvidence, config: SpcConfig) -> str | None:
             ],
             model=config.llm.model,
             base_url=config.llm.base_url,
-            api_key=api_key,
+            api_key=resolve_api_key(config.llm),
             timeout=config.llm.timeout,
         )
     except Exception:  # noqa: BLE001 — theme clustering is best-effort by design

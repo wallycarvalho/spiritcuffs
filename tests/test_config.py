@@ -135,3 +135,77 @@ def test_github_config_roundtrip(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert load_config(tmp_path).github == config.github
+
+
+# --- user-config precedence (repo .spc.toml > ~/.spc/config.toml > defaults) ---
+
+
+def _write_user_config(
+    tmp_path: Path,
+    *,
+    llm_base_url: str | None = None,
+    llm_model: str | None = None,
+    llm_api_key_env: str | None = None,
+    llm_api_key: str | None = None,
+) -> None:
+    from spc.userconfig import save_user_config, user_config_path
+
+    save_user_config(
+        user_config_path(),
+        llm_base_url=llm_base_url,
+        llm_model=llm_model,
+        llm_api_key_env=llm_api_key_env,
+        llm_api_key=llm_api_key,
+    )
+
+
+def test_user_config_fills_defaults_when_repo_missing(tmp_path: Path) -> None:
+    _write_user_config(
+        tmp_path,
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o-mini",
+        llm_api_key_env="OPENAI_API_KEY",
+    )
+    config = load_config(tmp_path)
+    assert config.llm.base_url == "https://api.openai.com/v1"
+    assert config.llm.model == "gpt-4o-mini"
+    assert config.llm.api_key_env == "OPENAI_API_KEY"
+    assert config.review.strict is False  # non-llm sections unaffected
+
+
+def test_repo_config_beats_user_config(tmp_path: Path) -> None:
+    _write_user_config(tmp_path, llm_model="gpt-4o-mini")
+    (tmp_path / ".spc.toml").write_text(
+        '[llm]\nmodel = "my/model"\n', encoding="utf-8"
+    )
+    assert load_config(tmp_path).llm.model == "my/model"
+
+
+def test_user_config_ignored_for_repo_explicit_defaults(tmp_path: Path) -> None:
+    """Repo values equal to the built-in default count as unset — user config fills.
+
+    `spc init` writes every key with defaults, so a generated .spc.toml must
+    not permanently mask the user's setup choices.
+    """
+    _write_user_config(tmp_path, llm_model="gpt-4o-mini")
+    (tmp_path / ".spc.toml").write_text(
+        '[llm]\nmodel = "anthropic/claude-3.5-haiku"\n', encoding="utf-8"
+    )
+    assert load_config(tmp_path).llm.model == "gpt-4o-mini"
+
+
+def test_user_config_partial_fill_keeps_repo_partial_override(tmp_path: Path) -> None:
+    _write_user_config(tmp_path, llm_base_url="https://api.openai.com/v1")
+    (tmp_path / ".spc.toml").write_text(
+        '[llm]\nmodel = "my/model"\n', encoding="utf-8"
+    )
+    llm = load_config(tmp_path).llm
+    assert llm.model == "my/model"  # repo choice
+    assert llm.base_url == "https://api.openai.com/v1"  # user fill
+
+
+def test_llm_api_key_field_loaded_from_repo_toml(tmp_path: Path) -> None:
+    (tmp_path / ".spc.toml").write_text(
+        '[llm]\napi_key = "sk-repo"\n', encoding="utf-8"
+    )
+    assert load_config(tmp_path).llm.api_key == "sk-repo"

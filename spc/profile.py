@@ -156,7 +156,8 @@ def build_profile(
     here). Empty for git-only runs. Raises :class:`spc.llm.LlmError` on failure —
     the caller decides fail-soft behavior.
     """
-    api_key = llm.resolve_api_key(config.llm.api_key_env)
+    from spc.userconfig import resolve_api_key
+
     prompt = _render_synthesis_prompt(evidence, extra_evidence_md)
     return llm.complete(
         [
@@ -165,7 +166,7 @@ def build_profile(
         ],
         model=config.llm.model,
         base_url=config.llm.base_url,
-        api_key=api_key,
+        api_key=resolve_api_key(config.llm),
         timeout=config.llm.timeout,
     )
 

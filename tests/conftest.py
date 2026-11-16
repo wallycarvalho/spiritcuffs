@@ -77,3 +77,9 @@ def _commit_files(repo: Path, subject: str, files: dict[str, str]) -> None:
 def isolate_history_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point SPC_HISTORY_DIR at a temp dir so tests never touch ~/.spc."""
     monkeypatch.setenv("SPC_HISTORY_DIR", str(tmp_path / "history"))
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Redirect the user config (~/.spc/config.toml) to a temp path in every test."""
+    monkeypatch.setenv("SPC_USER_CONFIG", str(tmp_path / "usercfg" / "config.toml"))

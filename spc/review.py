@@ -245,11 +245,13 @@ def run_review(
     output = ReviewOutput(model=config.llm.model)
     prompt = build_prompt(diff, profile, conventions, config, hotspot_paths=hotspot_paths)
     try:
+        from spc.userconfig import resolve_api_key
+
         raw = llm.complete(
             [{"role": "user", "content": prompt}],
             model=config.llm.model,
             base_url=config.llm.base_url,
-            api_key=llm.resolve_api_key(config.llm.api_key_env),
+            api_key=resolve_api_key(config.llm),
             timeout=config.llm.timeout,
         )
     except llm.LlmError as exc:

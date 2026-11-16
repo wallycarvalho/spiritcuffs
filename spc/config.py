@@ -21,6 +21,10 @@ class LlmConfig:
     model: str = "anthropic/claude-3.5-haiku"
     api_key_env: str = "SPC_API_KEY"
     timeout: float = 30.0
+    # Repo-level API key (``llm.api_key`` in .spc.toml). WARNING: .spc.toml is
+    # committed — the wizard never writes the key here; this field exists so a
+    # user MAY choose it consciously. Usually left empty (user config / env).
+    api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -157,13 +161,15 @@ def _section(section_cls: type[T], raw: object) -> T:
 def load_config(repo_root: Path) -> SpcConfig:
     """Load ``.spc.toml`` from *repo_root*, falling back to defaults for missing keys.
 
-    Never raises: unknown keys are dropped, wrong-typed values fall back to
-    defaults (each with a one-line warning) — a config typo must never break
-    the push path.
+    Precedence: repo ``.spc.toml`` > user ``~/.spc/config.toml`` > built-in
+    defaults. The user config contributes only LLM endpoint defaults and
+    secrets (repo values always win). Never raises: unknown keys are dropped,
+    wrong-typed values fall back to defaults (each with a one-line warning) —
+    a config typo must never break the push path.
     """
     path = config_path(repo_root)
     if not path.is_file():
-        return SpcConfig()
+        return SpcConfig(llm=_apply_user_llm_defaults(LlmConfig()))
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
@@ -171,13 +177,48 @@ def load_config(repo_root: Path) -> SpcConfig:
             f"spiritcuffs: could not parse {CONFIG_FILENAME} ({exc}) — using defaults",
             file=sys.stderr,
         )
-        return SpcConfig()
+        return SpcConfig(llm=_apply_user_llm_defaults(LlmConfig()))
+    llm = _section(LlmConfig, raw.get("llm", {}))
+    llm = _apply_user_llm_defaults(llm)
     return SpcConfig(
-        llm=_section(LlmConfig, raw.get("llm", {})),
+        llm=llm,
         review=_section(ReviewConfig, raw.get("review", {})),
         secrets=_section(SecretsConfig, raw.get("secrets", {})),
         learn=_section(LearnConfig, raw.get("learn", {})),
         github=_section(GithubConfig, raw.get("github", {})),
+    )
+
+
+def _apply_user_llm_defaults(llm: LlmConfig) -> LlmConfig:
+    """Fill LLM fields the repo config left at built-in defaults from the user config.
+
+    Repo values that differ from built-in defaults always win. Values equal to
+    the default are treated as unset — ``spc init`` writes every key (with
+    defaults), so default-equal values must not mask the user's setup choices.
+    (Secret keys live only in the user config; they are resolved at call time
+    via :func:`spc.userconfig.resolve_api_key`, not merged here.)
+    """
+    from spc.userconfig import load_user_config
+
+    user = load_user_config()
+    return LlmConfig(
+        base_url=(
+            llm.base_url
+            if llm.base_url != LlmConfig.base_url and llm.base_url
+            else (user.llm_base_url or llm.base_url)
+        ),
+        model=(
+            llm.model
+            if llm.model != LlmConfig.model and llm.model
+            else (user.llm_model or llm.model)
+        ),
+        api_key_env=(
+            llm.api_key_env
+            if llm.api_key_env != LlmConfig.api_key_env and llm.api_key_env
+            else (user.llm_api_key_env or llm.api_key_env)
+        ),
+        timeout=llm.timeout,
+        api_key=llm.api_key,
     )
 
 
