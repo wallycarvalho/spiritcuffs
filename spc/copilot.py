@@ -241,10 +241,11 @@ def prepare_llm_call(
             "or set COPILOT_GITHUB_TOKEN"
         )
     exchanged = exchange_token(copilot_oauth_token, client)
+    # Note: X-GitHub-Api-Version is an api.github.com header — the Copilot
+    # chat endpoint rejects it with 400 "invalid apiVersion".
     headers = {
         **COPILOT_CHAT_HEADERS,
         "User-Agent": USER_AGENT,
-        "X-GitHub-Api-Version": GITHUB_API_VERSION,
     }
     return exchanged.api_base, exchanged.token, headers
 

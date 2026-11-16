@@ -292,8 +292,9 @@ class TestPrepareLlmCall:
         assert api_key == "tid=short"
         assert headers["Openai-Intent"] == "conversation-edits"
         assert headers["x-initiator"] == "user"
-        assert headers["X-GitHub-Api-Version"] == "2022-11-28"
         assert headers["User-Agent"].startswith("spiritcuffs/")
+        # api.github.com-only header — Copilot chat endpoint 400s on it
+        assert "X-GitHub-Api-Version" not in headers
 
     def test_copilot_without_token_raises_cleanly(self) -> None:
         llm_config = LlmConfig(provider="copilot")
