@@ -77,8 +77,9 @@ PROVIDERS: tuple[Provider, ...] = (
         # Base URL is per-run from the token exchange (endpoints.api); this
         # placeholder is overridden by the copilot auth path at call time.
         base_url="https://api.githubcopilot.com",
-        # Copilot plan gates model access; gpt-4.1-mini is broadly available.
-        model="gpt-4.1-mini",
+        # Copilot plan gates model access; GA chat models per GitHub's
+        # supported-models table (gpt-4.1 retired 2026-06-01).
+        model="claude-sonnet-4.6",
         api_key_env="COPILOT_GITHUB_TOKEN",
         kind="copilot",
     ),
@@ -92,6 +93,8 @@ PROVIDERS: tuple[Provider, ...] = (
 )
 
 # Curated shortlist per provider; free-text always wins over these.
+# Copilot entries per GitHub's supported-models table (2026-11): all GA,
+# chat-completions-capable, broadest plan coverage.
 MODEL_SHORTLISTS: dict[str, tuple[str, ...]] = {
     "openrouter": (
         "anthropic/claude-3.5-haiku",
@@ -101,7 +104,12 @@ MODEL_SHORTLISTS: dict[str, tuple[str, ...]] = {
     ),
     "openai": ("gpt-4o-mini", "gpt-4o", "o3-mini"),
     "anthropic": ("claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"),
-    "copilot": ("gpt-4.1-mini", "gpt-4.1", "o4-mini"),
+    "copilot": (
+        "claude-sonnet-4.6",
+        "claude-haiku-4.5",
+        "gpt-5.6-luna",
+        "gemini-3.8-flash",
+    ),
     "ollama": ("llama3.1", "qwen2.5-coder", "mistral"),
 }
 

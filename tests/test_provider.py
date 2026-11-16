@@ -58,7 +58,7 @@ class TestCopilotResolution:
             lambda llm, oauth: (
                 "https://api.example-copilot/v1",
                 "tid_COPILOT",
-                {"Openai-Intent": "conversation-edits", "x-initiator": "user"},
+                {"Openai-Intent": "conversation-panel", "x-initiator": "user"},
             ),
         )
         base_url, api_key, extra_headers = resolve_provider_params(
@@ -66,7 +66,7 @@ class TestCopilotResolution:
         )
         assert base_url == "https://api.example-copilot/v1"
         assert api_key == "tid_COPILOT"
-        assert extra_headers["Openai-Intent"] == "conversation-edits"
+        assert extra_headers["Openai-Intent"] == "conversation-panel"
         assert extra_headers["x-initiator"] == "user"
 
     def test_copilot_error_propagates_unchanged(
@@ -113,7 +113,7 @@ class TestBuildProfileUsesSharedResolver:
             return (
                 "https://api.example-copilot/v1",
                 "tid_COPILOT",
-                {"Openai-Intent": "conversation-edits"},
+                {"Openai-Intent": "conversation-panel"},
             )
 
         monkeypatch.setattr("spc.copilot.prepare_llm_call", fake_prepare)
@@ -122,7 +122,7 @@ class TestBuildProfileUsesSharedResolver:
         assert captured["base_url"] == "https://api.example-copilot/v1"
         assert captured["api_key"] == "tid_COPILOT"
         headers = captured["extra_headers"]
-        assert headers is not None and headers["Openai-Intent"] == "conversation-edits"
+        assert headers is not None and headers["Openai-Intent"] == "conversation-panel"
 
 
 class TestClusterThemesUsesSharedResolver:

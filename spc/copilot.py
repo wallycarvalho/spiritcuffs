@@ -49,10 +49,14 @@ FALLBACK_API_BASE = "https://api.githubcopilot.com"
 POLL_MAX_SECONDS = 900
 GITHUB_API_VERSION = "2022-11-28"
 
-# Headers Copilot's endpoint requires; without them requests are rejected.
+# Headers Copilot's endpoint requires; without them requests are rejected
+# (400/403). Verified against litellm/copilot-api/maki's header sets.
 COPILOT_CHAT_HEADERS = {
-    "Openai-Intent": "conversation-edits",
+    "Openai-Intent": "conversation-panel",
     "x-initiator": "user",
+    "Copilot-Integration-Id": "vscode-chat",
+    "Editor-Version": "vscode/1.98.0",
+    "Editor-Plugin-Version": "copilot-chat/0.26.7",
 }
 
 

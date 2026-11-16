@@ -290,7 +290,7 @@ class TestPrepareLlmCall:
         )
         assert base_url == "https://api.e.githubcopilot.com"
         assert api_key == "tid=short"
-        assert headers["Openai-Intent"] == "conversation-edits"
+        assert headers["Openai-Intent"] == "conversation-panel"
         assert headers["x-initiator"] == "user"
         assert headers["User-Agent"].startswith("spiritcuffs/")
         # api.github.com-only header — Copilot chat endpoint 400s on it
@@ -381,7 +381,7 @@ class TestWizardCopilot:
         assert "copilot" in keys
         copilot_provider = next(p for p in PROVIDERS if p.key == "copilot")
         assert copilot_provider.kind == "copilot"
-        assert copilot_provider.model == "gpt-4.1-mini"
+        assert copilot_provider.model == "claude-sonnet-4.6"
 
     def test_non_interactive_without_token_errors_cleanly(
         self, user_config: Path
@@ -410,7 +410,7 @@ class TestWizardCopilot:
         config = load_user_config()
         assert config.copilot_github_token == "gho_ABC123456789"
         assert config.llm_provider == "copilot"
-        assert config.llm_model == "gpt-4.1-mini"
+        assert config.llm_model == "claude-sonnet-4.6"
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         # full token never echoed to console
         printed = console.file.getvalue()  # type: ignore[union-attr]
@@ -482,7 +482,7 @@ class TestCopilotReviewPath:
             return '[{"severity": "warn", "file": "a.py", "line": 1, "message": "m", "suggestion": ""}]'
 
         monkeypatch.setattr("spc.review.llm.complete", fake_complete)
-        config = SpcConfig(llm=LlmConfig(provider="copilot", model="gpt-4.1-mini"))
+        config = SpcConfig(llm=LlmConfig(provider="copilot", model="claude-sonnet-4.6"))
         output = run_review(
             DiffResult(text="", source="upstream", files=[]),
             profile=None,
@@ -495,7 +495,7 @@ class TestCopilotReviewPath:
         assert captured["base_url"] == "https://api.run.githubcopilot.com"
         assert captured["api_key"] == "tid=RUN"
         headers = captured["extra_headers"]
-        assert headers["Openai-Intent"] == "conversation-edits"
+        assert headers["Openai-Intent"] == "conversation-panel"
         assert headers["x-initiator"] == "user"
 
     def test_review_fail_soft_when_no_copilot_token(
@@ -580,7 +580,7 @@ class TestProviderSwitch:
 
         monkeypatch.setattr(copilot, "prepare_llm_call", fake_prepare)
         console = _console()
-        setup_mod._ping(console, model="gpt-4.1-mini")  # provider arg removed
+        setup_mod._ping(console, model="claude-sonnet-4.6")  # provider arg removed
         assert captured["oauth"] == "gho_PING"
         assert "connection test failed" in console.file.getvalue()  # type: ignore[union-attr]
 
