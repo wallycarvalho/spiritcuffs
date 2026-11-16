@@ -370,8 +370,5 @@ def test_ping_uses_repo_api_key(
         return "pong\n"
 
     monkeypatch.setattr("spc.llm.complete", fake_complete)
-    from spc.setup import PROVIDERS
-
-    provider = next(p for p in PROVIDERS if p.key == "openrouter")
-    setup_mod._ping(_console(), provider, model="m")
+    setup_mod._ping(_console(), model="m")
     assert captured["api_key"] == "sk-repo-key-987654"

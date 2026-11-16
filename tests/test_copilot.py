@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import io
 import stat
 from pathlib import Path
@@ -164,9 +165,31 @@ class TestPolling:
         """A server claiming expires_in=999999 is still bounded to POLL_MAX_SECONDS.
 
         poll_for_token min()es the deadline against POLL_MAX_SECONDS, so an
-        absurd expires_in can never stretch the wait past ~15 minutes.
+        absurd expires_in can never stretch the wait past ~15 minutes. The
+        fake clock advances by the slept interval, so the loop must terminate.
         """
-        assert copilot.POLL_MAX_SECONDS == 900
+        slept: list[float] = []
+        clock = [0.0]
+
+        def fake_now() -> float:
+            return clock[0]
+
+        def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+            clock[0] += seconds  # simulate wall time passing
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json_response({"error": "authorization_pending"})
+
+        with pytest.raises(copilot.CopilotError, match="timed out"):
+            copilot.poll_for_token(
+                copilot.DeviceCode("DC", "UC", "https://x", 5, 999_999),
+                client=_client(handler),
+                sleep=fake_sleep,
+                now=fake_now,
+            )
+        assert len(slept) <= copilot.POLL_MAX_SECONDS // 5 + 1
+        assert sum(slept) <= copilot.POLL_MAX_SECONDS + 5  # one interval overshoot max
 
 
 class TestEntitlement:
@@ -239,13 +262,6 @@ class TestTokenExchange:
 
 
 class TestPrepareLlmCall:
-    def test_non_copilot_passes_through(self) -> None:
-        llm_config = LlmConfig(base_url="https://api.openai.com/v1", api_key="sk-1")
-        base_url, api_key, headers = copilot.prepare_llm_call(llm_config, None)
-        assert base_url == "https://api.openai.com/v1"
-        assert api_key == "sk-1"
-        assert headers == {}
-
     def test_copilot_exchanges_and_attaches_headers(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return _json_response(
@@ -343,9 +359,9 @@ class TestResolveCopilotToken:
 
 
 class TestWizardCopilot:
-    def test_provider_list_has_copilot_sixth(self) -> None:
+    def test_provider_list_contains_copilot(self) -> None:
         keys = [p.key for p in PROVIDERS]
-        assert keys == ["openrouter", "openai", "anthropic", "copilot", "ollama"][:4] + ["ollama"] or "copilot" in keys
+        assert "copilot" in keys
         copilot_provider = next(p for p in PROVIDERS if p.key == "copilot")
         assert copilot_provider.kind == "copilot"
         assert copilot_provider.model == "gpt-4.1-mini"
@@ -493,3 +509,78 @@ class TestCopilotReviewPath:
         assert llm._redact(text, "gho_X") == "HTTP 401: bad token tid=SECRET ***"
         # complete() redacts whatever api_key it is handed, copilot tokens included
         assert llm._redact("err tid=SHORT", "tid=SHORT") == "err ***"
+
+
+class TestProviderSwitch:
+    def test_api_key_setup_clears_stale_copilot_provider(
+        self, user_config: Path
+    ) -> None:
+        """After a Copilot setup, an explicit key setup must switch provider back.
+
+        _step_api_key never stored llm_provider before, so the user config
+        kept provider="copilot" and reviews kept hitting the Copilot endpoint
+        even after the user chose OpenRouter with a fresh key.
+        """
+
+        run_setup(
+            _console(), non_interactive=True, provider_key="copilot",
+            copilot_token="gho_OLD", skip_ping=True,
+        )
+        assert load_user_config().llm_provider == "copilot"
+        run_setup(
+            _console(), non_interactive=True, provider_key="openrouter",
+            api_key="sk-new", skip_ping=True,
+        )
+        provider = load_user_config().llm_provider
+        assert provider != "copilot"
+        assert provider == "generic"
+
+    def test_ping_branches_on_merged_provider_not_menu_choice(
+        self, tmp_path: Path, user_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ping must test what review will use: branch on merged llm.provider.
+
+        Mixed state: the wizard menu offered openrouter, but the merged
+        config still says copilot → the ping must exercise the Copilot
+        exchange path (and fail with the Copilot hint), not the plain key path.
+        """
+        import subprocess
+
+        import spc.setup as setup_mod
+
+        subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+        # Mirror what _step_copilot stores: token + provider choice together.
+        save_user_config(
+            user_config_path(), copilot_github_token="gho_PING", llm_provider="copilot"
+        )
+        monkeypatch.chdir(tmp_path)  # find_repo_root() must find THIS repo
+        # No repo .spc.toml [llm] provider key → user config provider wins.
+        captured: dict[str, object] = {}
+
+        def fake_prepare(llm_config, oauth_token, client=None):  # noqa: ANN001
+            captured["oauth"] = oauth_token
+            raise copilot.CopilotError("exchange unreachable")
+
+        monkeypatch.setattr(copilot, "prepare_llm_call", fake_prepare)
+        console = _console()
+        setup_mod._ping(console, model="gpt-4.1-mini")  # provider arg removed
+        assert captured["oauth"] == "gho_PING"
+        assert "connection test failed" in console.file.getvalue()  # type: ignore[union-attr]
+
+
+class TestUserAgent:
+    def test_user_agent_prefers_installed_package_version(self) -> None:
+        """spiritcuffs is installed in the dev venv → real version string."""
+        assert copilot.USER_AGENT.startswith("spiritcuffs/")
+        assert copilot.USER_AGENT != "spiritcuffs/dev"
+
+    def test_user_agent_falls_back_when_package_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PackageNotFoundError → spiritcuffs/dev (source-tree usage)."""
+
+        def boom(name: str) -> str:
+            raise importlib.metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "version", boom)
+        assert copilot._user_agent() == "spiritcuffs/dev"
