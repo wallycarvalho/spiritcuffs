@@ -19,36 +19,24 @@ spiritcuffs: reviewing 3 files…
 
 ## 30-second quickstart
 
+Two one-time commands, then it just runs on every push:
+
 ```bash
-# run ad hoc (no install):
+# 1) authenticate — run once per machine, pick ONE of these:
 uvx spiritcuffs setup        # or: pipx install spiritcuffs && spc setup
-# or via npx (installs nothing but needs uv or pipx underneath):
-npx spiritcuffs setup
+npx spiritcuffs setup        # npm users: same wizard, no separate install step
 ```
 
-`spc setup` is a one-time wizard: pick a provider (OpenRouter, OpenAI,
-Anthropic, GitHub Copilot, or a local endpoint), authenticate (paste your API
-key — stored in `~/.spc/config.toml`, mode 600 — or log in with your Copilot
-subscription via the GitHub device flow), pick a model, and it tests the
-connection. Scripted/CI variant: `spc setup --non-interactive --provider
-openrouter --api-key-env OPENROUTER_API_KEY --skip-ping`.
-
-**GitHub Copilot** works with any Copilot plan (Free included): choosing it
-runs the official GitHub device-flow login (open a URL, enter a code), checks
-your Copilot entitlement, and stores only the long-lived GitHub OAuth token.
-Each review exchanges it for a short-lived API token that is never written to
-disk. CI: `spc setup -y --provider copilot --copilot-token <github-oauth-token>`
-(or export `COPILOT_GITHUB_TOKEN`). GitHub Enterprise is not supported yet.
-Copilot plan gates model access — the wizard default `claude-sonnet-4.6` is
-a broad-coverage GA chat model; override with `--model`. On plans where the
-token exchange is rejected (403/404 — e.g. older tokens), SpiritCuffs uses
-your long-lived OAuth token directly against the Copilot API host instead;
-a 401 (revoked token) raises and asks you to re-run `spc setup`.
-
-Then, inside any git repo:
+The wizard picks a provider (OpenRouter, OpenAI, Anthropic, GitHub Copilot, or
+a local endpoint), authenticates, picks a model, and tests the connection.
+Scripted/CI variant: `spc setup --non-interactive --provider openrouter
+--api-key-env OPENROUTER_API_KEY --skip-ping`. Copilot specifics (device-flow
+login, CI flags, plan-gated models) are in [GitHub Copilot](#github-copilot)
+below.
 
 ```bash
-uvx spiritcuffs init         # writes .spc.toml + hook + profile + first review
+# 2) wire up a repo — run once per repo, same launcher as step 1:
+npx spiritcuffs init         # or: uvx spiritcuffs init / spc init
 ```
 
 `spc init`:
@@ -60,16 +48,50 @@ uvx spiritcuffs init         # writes .spc.toml + hook + profile + first review
    PR/review-comment history, then synthesizes `.spc/profile.md` — one LLM call,
 5. runs your **first review immediately**.
 
-Every later `git push` triggers `spc review` automatically.
+Every later `git push` triggers `spc review` automatically. You can always
+invoke the same launcher interchangeably — `npx spiritcuffs <cmd>`,
+`uvx spiritcuffs <cmd>`, or bare `spc <cmd>` if pipx-installed — all three run
+the identical CLI.
 
 | command | what it does |
 |---|---|
-| `spc setup` | onboarding wizard (provider, key, model, prefs) |
-| `spc init` | repo wiring + learning + first review |
+| `spc setup` | onboarding wizard (provider, key, model, prefs) — once per machine |
+| `spc init` | repo wiring + learning + first review — once per repo |
 | `spc learn` | re-mine history, re-synthesize `.spc/profile.md` |
 | `spc review` | review upstream diff (staged fallback) — what the hook runs |
 | `spc history` | recent runs for this repo |
 | `spc hook --remove` | uninstall the hook |
+
+### What the LLM sees
+
+Every review sends exactly four things to the model — nothing else leaves
+your machine:
+
+1. **Your pending diff** (capped at `max_diff_kb`, oversized files dropped and
+   listed in the output).
+2. **The repo profile** (`.spc/profile.md`) — the synthesized review standards,
+   capped at ~6000 chars.
+3. **Convention files** (`CONTRIBUTING.md`, `AGENTS.md`, lint configs — capped
+   at ~8000 chars).
+4. **Hotspot file paths** — just names of historically high-churn files, so
+   they get slightly more scrutiny.
+
+It does **not** see your source code, your `evidence.json` (raw PR data),
+your history log, or anything else on disk. Secrets in the diff are regex-
+scanned *before* the call; see the privacy section below.
+
+### GitHub Copilot
+
+Works with any Copilot plan (Free included). Choosing it runs the official
+GitHub device-flow login (open a URL, enter a code) and stores only the
+long-lived GitHub OAuth token. CI: `spc setup -y --provider copilot
+--copilot-token <github-oauth-token>` (or export `COPILOT_GITHUB_TOKEN`).
+GitHub Enterprise is not supported yet.
+
+**Models:** Copilot plan gates model access — the wizard default
+`claude-sonnet-4.6` is a broad-coverage GA chat model; override with
+`--model`. Token-exchange fallback details (403/404 → direct token use; 401 →
+re-auth) are documented in the privacy section below.
 
 ## Privacy: what leaves your machine
 
@@ -97,7 +119,7 @@ Every knob has a working default:
 ```toml
 [llm]
 base_url = "https://openrouter.ai/api/v1"   # any OpenAI-compatible endpoint
-model = "anthropic/claude-3.5-haiku"        # fast/cheap default; your choice
+model = "anthropic/claude-3.5-haiku"        # any fast/cheap chat model works
 api_key_env = "SPC_API_KEY"                 # env var holding the key
 api_key = ""                                # optional inline key — DON'T commit
                                             # secrets here; prefer `spc setup`
@@ -177,6 +199,11 @@ your push goes through. Run `spc setup` (or `export SPC_API_KEY=sk-...`).
 
 **A review blocked my push** — that only happens with `strict = true` plus a
 critical finding. Fix it, or bypass once with `git push --no-verify`.
+
+**I disagree with a finding / it's a false positive** — findings are advisory
+(except under `strict = true`); ignore them and move on. `spc history` keeps
+every run, and v1.1 adds accept/dismiss marking so repeated dismissals can
+calibrate future reviews (v2).
 
 **Stale profile notice** — `.spc/profile.md` is older than
 `profile_max_age_days` (30). Re-run `spc learn` when convenient; reviews
