@@ -14,10 +14,25 @@ GitHub Enterprise is explicitly not supported yet (the device flow and
 
 from __future__ import annotations
 
+import importlib.metadata
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
+
+from spc.config import LlmConfig
+
+
+def _user_agent() -> str:
+    """``spiritcuffs/<version>``; dev fallback when the package isn't installed."""
+    try:
+        return f"spiritcuffs/{importlib.metadata.version('spiritcuffs')}"
+    except importlib.metadata.PackageNotFoundError:
+        return "spiritcuffs/dev"
+
+
+USER_AGENT = _user_agent()
 
 CLIENT_ID = "Ov23li5Rr1rgjMTpz5am"
 DEVICE_CODE_URI = "https://github.com/login/device/code"
@@ -28,7 +43,6 @@ FALLBACK_API_BASE = "https://api.githubcopilot.com"
 # Device codes expire in ~15 minutes; polling must give up before that.
 POLL_MAX_SECONDS = 900
 GITHUB_API_VERSION = "2022-11-28"
-USER_AGENT = "spiritcuffs/0.1.0"
 
 # Headers Copilot's endpoint requires; without them requests are rejected.
 COPILOT_CHAT_HEADERS = {
@@ -99,26 +113,30 @@ def poll_for_token(
     device: DeviceCode,
     *,
     client: httpx.Client | None = None,
-    sleep: callable = time.sleep,  # type: ignore[assignment]
+    sleep: Callable[[float], None] = time.sleep,
     deadline_seconds: int | None = None,
+    now: Callable[[], float] = time.monotonic,
 ) -> str:
     """Poll until the user approves, giving up after ~15 minutes.
 
     Honors ``interval`` and the server's ``slow_down`` bump; raises
     :class:`CopilotError` with a clean message on expiry or access denial.
+
+    The deadline is wall-clock (injectable ``now``, default
+    ``time.monotonic``), not accumulated sleep: a hung poll attempt (each has
+    its own transport timeout) must still end inside the overall bound.
     """
     bound = deadline_seconds if deadline_seconds is not None else device.expires_in
     bound = min(bound, POLL_MAX_SECONDS)
+    deadline = now() + bound
     interval = device.interval
-    waited = 0.0
     while True:
-        if waited >= bound:
+        if now() >= deadline:
             raise CopilotError(
                 "Copilot login timed out — run `spc setup` again when ready "
-                f"(waited {int(waited)}s)"
+                f"(gave up after {bound}s)"
             )
         sleep(interval)
-        waited += interval
         response = _post(
             TOKEN_URI,
             json={
@@ -195,22 +213,16 @@ def exchange_token(
 
 
 def prepare_llm_call(
-    llm: object, copilot_oauth_token: str | None, client: httpx.Client | None = None
+    llm: LlmConfig, copilot_oauth_token: str | None, client: httpx.Client | None = None
 ) -> tuple[str, str, dict[str, str]]:
-    """Resolve (base_url, api_key, extra_headers) for the configured provider.
+    """Resolve (base_url, api_key, extra_headers) for a Copilot run.
 
-    For ``provider == "copilot"`` the OAuth token is exchanged for a
-    short-lived Copilot token (never persisted) and the required Copilot
-    headers are attached; the base URL comes from the exchange response's
-    ``endpoints.api`` when present. Anything else passes through unchanged.
-    Raises :class:`CopilotError` when a Copilot run has no OAuth token — the
-    caller fails soft.
+    The OAuth token is exchanged for a short-lived Copilot token (never
+    persisted) and the required Copilot headers are attached; the base URL
+    comes from the exchange response's ``endpoints.api`` when present.
+    Raises :class:`CopilotError` when there is no OAuth token — the caller
+    fails soft.
     """
-    from spc.config import LlmConfig
-
-    assert isinstance(llm, LlmConfig)
-    if llm.provider != "copilot":
-        return llm.base_url, llm.api_key, {}
     if not copilot_oauth_token:
         raise CopilotError(
             "no Copilot OAuth token — run `spc setup` (choose GitHub Copilot) "

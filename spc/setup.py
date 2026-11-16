@@ -205,7 +205,7 @@ def _run_setup_inner(  # noqa: PLR0913 — a wizard genuinely has this many knob
     )
     _step_preferences(console, non_interactive, strict=strict, show_nits=show_nits)
     if not skip_ping:
-        _ping(console, provider, final_model)
+        _ping(console, final_model)
     _offer_repo_wiring(console, non_interactive)
     console.print("[green]setup complete.[/]")
     return 0
@@ -287,6 +287,7 @@ def _step_api_key(
             llm_base_url=provider.base_url,
             llm_model=provider.model,
             llm_api_key_env=api_key_env or provider.api_key_env,
+            llm_provider="generic",
         )
         console.print(
             f"[green]API key stored[/] in {user_config_path()} ({mask_secret(api_key)})"
@@ -303,6 +304,7 @@ def _step_api_key(
                 llm_api_key_env=api_key_env.strip(),
                 llm_base_url=provider.base_url,
                 llm_model=provider.model,
+                llm_provider="generic",
             )
             console.print(
                 f"[green]will use env var[/] [bold]{api_key_env.strip()}[/] "
@@ -335,6 +337,7 @@ def _step_api_key(
             llm_base_url=provider.base_url,
             llm_model=provider.model,
             llm_api_key_env=provider.api_key_env,
+            llm_provider="generic",
         )
         console.print(f"[green]key stored[/] in {user_config_path()} ({mask_secret(key)})")
     else:
@@ -571,7 +574,7 @@ def _step_preferences(
         console.print("[yellow]spiritcuffs: could not update .spc.toml — skipping.[/]")
 
 
-def _ping(console: Console, provider: Provider, model: str) -> None:
+def _ping(console: Console, model: str) -> None:
     """One cheap live LLM call through the real plumbing; fail-soft output.
 
     Single attempt (no retry ladder) so a hanging endpoint can't stall the
@@ -587,7 +590,10 @@ def _ping(console: Console, provider: Provider, model: str) -> None:
     config = load_config(repo_root) if repo_root is not None else None
     llm_config = config.llm if config is not None else LlmConfig()
     try:
-        if provider.kind == "copilot":
+        # Branch on the MERGED config's provider — exactly what run_review
+        # branches on — so the ping tests the endpoint reviews will use even
+        # after a partial provider switch.
+        if llm_config.provider == "copilot":
             oauth_token = resolve_copilot_token(
                 config.copilot.github_oauth_token if config is not None else None
             )
@@ -595,7 +601,7 @@ def _ping(console: Console, provider: Provider, model: str) -> None:
                 llm_config, oauth_token
             )
         else:
-            base_url = provider.base_url
+            base_url = llm_config.base_url
             api_key = resolve_api_key(llm_config)
             extra_headers = {}
         text = llm.complete(

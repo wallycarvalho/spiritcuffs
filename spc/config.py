@@ -274,10 +274,10 @@ github_max_comments = 1000 # total inline review comments fetched
 github_pages_max = 10      # API pagination cap
 
 [copilot]
-# provider = "copilot" in [llm] above switches auth to GitHub Copilot; the
-# OAuth token usually lives in the user config (spc setup → Copilot login).
-# GitHub Enterprise is not supported yet.
-github_oauth_token = ""    # GitHub OAuth token from the device-flow login
+# provider = "copilot" in [llm] above switches auth to GitHub Copilot.
+# The OAuth token lives in ~/.spc/config.toml (set via `spc setup`, mode 600)
+# or the COPILOT_GITHUB_TOKEN env var — do NOT commit it here: this file is
+# shared with the team. GitHub Enterprise is not supported yet.
 '''
 
 
