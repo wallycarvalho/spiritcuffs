@@ -83,3 +83,36 @@ def isolate_history_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 def isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Redirect the user config (~/.spc/config.toml) to a temp path in every test."""
     monkeypatch.setenv("SPC_USER_CONFIG", str(tmp_path / "usercfg" / "config.toml"))
+
+
+@pytest.fixture(autouse=True)
+def no_live_model_listing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the wizard's live model fetch to its fail-soft fallback in every test.
+
+    The model-listing step makes a real HTTP call by design; without this stub
+    any interactive wizard test would reach api.openrouter.ai etc. Tests that
+    exercise the real fetch behavior re-enable it with
+    ``enable_live_model_fetch`` — do NOT restore ``spc.setup._fetch_live_models``
+    manually, the original is captured before any stubbing.
+    """
+    import spc.setup as setup_mod
+
+    monkeypatch.setattr(
+        setup_mod, "_fetch_live_models", lambda *args, **kwargs: None
+    )
+
+
+@pytest.fixture
+def enable_live_model_fetch(monkeypatch: pytest.MonkeyPatch):
+    """Re-enable the wizard's real _fetch_live_models, returning the module.
+
+    Used by the TestLiveModelListing tests: they stub
+    ``spc.setup.list_chat_models`` (the network boundary inside the fetch) and
+    need the fetch itself live. Yields the spc.setup module for asserting on
+    patch targets.
+    """
+    import spc.setup as setup_mod
+
+    real = setup_mod.__fetch_live_models_real__
+    monkeypatch.setattr(setup_mod, "_fetch_live_models", real)
+    return setup_mod

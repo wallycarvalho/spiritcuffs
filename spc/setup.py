@@ -18,6 +18,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from spc.config import LlmConfig, load_config
+from spc.models import ModelsError, list_chat_models
 from spc.userconfig import (
     UserConfig,
     load_user_config,
@@ -33,6 +34,8 @@ WELCOME = (
 )
 
 KEEP_CURRENT = "keep current"
+OTHER_CHOICE = "other — type a model id manually"
+MODELS_PER_PAGE = 20
 
 
 @dataclass(frozen=True)
@@ -455,7 +458,14 @@ def _step_model(
     user: UserConfig,
     model: str | None,
 ) -> str:
-    """Curated shortlist + keep-current; returns the final model id."""
+    """Pick the model: live list → curated shortlist → free text; returns the id.
+
+    When a model override flag is given the menu is skipped entirely (no
+    network call). Otherwise the provider's live model list is fetched and
+    shown paginated, with our curated recommendations starred; any fetch
+    failure falls back to the shortlist with one soft line — the wizard never
+    crashes on a bad provider response. The ping remains the final gate.
+    """
     if model:
         save_user_config(user_config_path(), llm_model=model)
         return model
@@ -463,17 +473,133 @@ def _step_model(
     if non_interactive:
         console.print(f"model: [bold]{current}[/]")
         return current
-    options = list(MODEL_SHORTLISTS.get(provider.key, ()))
-    if current not in options:
-        options.append(current)
-    options.append(KEEP_CURRENT)
-    label = f"Model [dim](current: {current})[/]"
-    index = _choose_index(options, label, console)
-    if index is None or options[index] == KEEP_CURRENT:
+
+    listed = _fetch_live_models(console, provider)
+    options = list(MODEL_SHORTLISTS.get(provider.key, ())) if listed is None else listed
+    starred = set(MODEL_SHORTLISTS.get(provider.key, ()))
+    chosen = _prompt_model_choice(console, options, current, starred)
+    if chosen is None:
         return current
-    chosen = options[index]
     save_user_config(user_config_path(), llm_model=chosen)
     return chosen
+
+
+def _fetch_live_models(console: Console, provider: Provider) -> list[str] | None:
+    """Fetch the provider's chat-capable model list; None after a soft failure.
+
+    Copilot resolves the short-lived token here (never persisted); any error
+    — network, HTTP, malformed body — prints one line and returns None so the
+    caller falls back to :data:`MODEL_SHORTLISTS` exactly as before.
+    """
+    from spc import copilot as copilot_module
+    from spc.userconfig import resolve_copilot_token
+
+    try:
+        if provider.kind == "copilot":
+            oauth_token = resolve_copilot_token()
+            copilot_token, _headers = copilot_module.prepare_call_parts(
+                LlmConfig(), oauth_token
+            )
+        else:
+            copilot_token = None
+        return list_chat_models(
+            provider.kind if provider.kind != "api_key" else _kind_from_base_url(provider),
+            provider.base_url,
+            api_key=os.environ.get(provider.api_key_env) or None,
+            copilot_token=copilot_token,
+        )
+    except (ModelsError, copilot_module.CopilotError) as exc:
+        console.print(
+            f"[yellow]couldn't fetch model list ({exc}), showing our curated picks[/]"
+        )
+        return None
+
+
+def _kind_from_base_url(provider: Provider) -> str:
+    """Best-effort provider kind for custom endpoints, for the model listing only.
+
+    A custom base_url gets the plain OpenAI-compatible listing (Bearer key,
+    /models). Only the five curated providers have dedicated shapes.
+    """
+    for known in PROVIDERS:
+        if known.base_url == provider.base_url:
+            return known.kind
+    return "openai"
+
+
+def _prompt_model_choice(
+    console: Console, options: list[str], current: str, starred: set[str]
+) -> str | None:
+    """Paginated numbered menu over *options*; returns the chosen id or None.
+
+    None means "keep current" (empty answer or repeated bad picks). Curated
+    recommendations are starred; the free-text "other" choice is always
+    offered last and wins over any listed option.
+    """
+    _print_model_pages(console, options, current, starred)
+
+    while True:
+        raw = typer.prompt(
+            "model choice (number, name, empty = keep current)", default="", show_default=False
+        ).strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            picked = _pick_numbered(console, int(raw), options)
+        else:
+            picked = _pick_named(console, raw, options)
+        if picked is not None:
+            return picked
+
+
+def _print_model_pages(
+    console: Console, options: list[str], current: str, starred: set[str]
+) -> None:
+    """Print the paginated model menu with recommendations starred."""
+    console.print(f"\n[bold]Model [dim](current: {current})[/][/]")
+    for offset in range(0, len(options), MODELS_PER_PAGE):
+        page = options[offset : offset + MODELS_PER_PAGE]
+        if offset:
+            console.print("[dim]— more —[/]")
+            typer.prompt("press enter for the next page", default="", show_default=False)
+        for index, option in enumerate(page, start=offset + 1):
+            marker = " [cyan]★ recommended[/]" if option in starred else ""
+            suffix = " [dim](current)[/]" if option == current else ""
+            console.print(f"  {index}. {option}{marker}{suffix}")
+    console.print(f"  {len(options) + 1}. {OTHER_CHOICE}")
+
+
+def _pick_numbered(console: Console, number: int, options: list[str]) -> str | None:
+    """Resolve a numeric menu answer; the "other" index starts the free-text prompt."""
+    if number == len(options) + 1:
+        return _prompt_other(console)
+    if 1 <= number <= len(options):
+        return options[number - 1]
+    console.print(f"[yellow]'{number}' is not a listed option — pick again or press enter.[/]")
+    return None
+
+
+def _pick_named(console: Console, raw: str, options: list[str]) -> str | None:
+    """Resolve a typed answer: exact id, unique substring, or the "other" trigger."""
+    if raw.lower() in {"other", OTHER_CHOICE.lower()}:
+        return _prompt_other(console)
+    if raw in options:
+        return raw
+    matches = [option for option in options if raw.lower() in option.lower()]
+    if len(matches) == 1:
+        return matches[0]
+    console.print(f"[yellow]'{raw}' does not match exactly one listed model — pick again.[/]")
+    return None
+
+
+def _prompt_other(console: Console) -> str | None:
+    """Free-text model entry; empty answer returns to the menu (None)."""
+    manual = typer.prompt(
+        "model id (empty = back to menu)", default="", show_default=False
+    ).strip()
+    if not manual:
+        return None
+    return manual
 
 
 def _detect_github_token_source() -> tuple[str | None, str | None]:
@@ -757,3 +883,6 @@ def _offer_repo_wiring(console: Console, non_interactive: bool) -> None:
 
     console.print("[bold]running spc init…[/]")
     init_command()
+
+
+__fetch_live_models_real__ = _fetch_live_models

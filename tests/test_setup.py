@@ -376,3 +376,190 @@ def test_ping_uses_repo_api_key(
     monkeypatch.setattr("spc.llm.complete", fake_complete)
     setup_mod._ping(_console(), model="m")
     assert captured["api_key"] == "sk-repo-key-987654"
+
+
+# ---------------------------------------------------------------------------
+# Live model listing in the wizard (spc/models.py behind _fetch_live_models)
+
+
+class TestLiveModelListing:
+    """The wizard's model step: live list, star markers, pagination, fallback."""
+
+    def test_interactive_uses_live_list_and_saves_choice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_live_model_fetch
+    ) -> None:
+        """Numbered pick from the fetched list is stored into user config."""
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr("spc.setup.list_chat_models", lambda *a, **k: ["m-one", "m-two"])
+        prompts: list[str] = []
+
+        def fake_prompt(message: str, *args: object, **kwargs: object) -> str:
+            prompts.append(str(message))
+            return "2" if "model choice" in str(message) else ""
+
+        monkeypatch.setattr(setup_mod.typer, "prompt", fake_prompt)
+        console = _console()
+        exit_code = run_setup(
+            console, non_interactive=False, provider_key="openai",
+            api_key="sk-live-12345678", skip_ping=True,
+        )
+        assert exit_code == 0
+        assert load_user_config().llm_model == "m-two"
+        printed = console.file.getvalue()
+        assert isinstance(printed, str)
+        assert "m-one" in printed and "m-two" in printed
+
+    def test_fetch_failure_falls_back_to_shortlist_with_message(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_live_model_fetch
+    ) -> None:
+        """ModelsError → one soft line + curated shortlist menu, wizard continues."""
+        import spc.setup as setup_mod
+        from spc.models import ModelsError
+
+        monkeypatch.setattr("spc.setup.list_chat_models", lambda *a, **k: (_ for _ in ()).throw(ModelsError("HTTP 500")))
+        prompts: list[str] = []
+
+        def fake_prompt(message: str, *args: object, **kwargs: object) -> str:
+            prompts.append(str(message))
+            return "1" if "model choice" in str(message) else ""
+
+        monkeypatch.setattr(setup_mod.typer, "prompt", fake_prompt)
+        console = _console()
+        exit_code = run_setup(
+            console, non_interactive=False, provider_key="openai",
+            api_key="sk-fb-123456789", skip_ping=True,
+        )
+        assert exit_code == 0
+        printed = console.file.getvalue()
+        assert isinstance(printed, str)
+        assert "couldn't fetch model list (HTTP 500), showing our curated picks" in printed
+        assert load_user_config().llm_model == "gpt-6-luna"  # shortlist pick 1
+
+    def test_recommended_models_starred(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_live_model_fetch
+    ) -> None:
+        """Shortlist entries appearing in the live list carry the ★ marker."""
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr(
+            "spc.setup.list_chat_models",
+            lambda *a, **k: ["gpt-6-luna", "gpt-5.6-luna", "gpt-4o-mini", "o4-mini"],
+        )
+        monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "1")
+        console = _console()
+        run_setup(
+            console, non_interactive=False, provider_key="openai",
+            api_key="sk-star-1234567", skip_ping=True,
+        )
+        printed = console.file.getvalue()
+        assert isinstance(printed, str)
+        assert "★ recommended" in printed
+
+    def test_pagination_over_twenty_models(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_live_model_fetch
+    ) -> None:
+        """22 models → 20 on the first page, 2 on the second, plus "other"."""
+        import spc.setup as setup_mod
+
+        listing = [f"model-{i:02d}" for i in range(22)]
+        monkeypatch.setattr("spc.setup.list_chat_models", lambda *a, **k: listing)
+        seen: list[str] = []
+        page = {"n": 0}
+
+        def fake_prompt(message: str, *args: object, **kwargs: object) -> str:
+            if "next page" in str(message):
+                page["n"] += 1
+                return ""
+            seen.append(str(message))
+            return "1" if page["n"] else "2"
+
+        monkeypatch.setattr(setup_mod.typer, "prompt", fake_prompt)
+        console = _console()
+        run_setup(
+            console, non_interactive=False, provider_key="openai",
+            api_key="sk-page-12345678", skip_ping=True,
+        )
+        printed = console.file.getvalue()
+        assert isinstance(printed, str)
+        assert "model-19" in printed  # index 20 → last on page one
+        assert "model-21" in printed  # index 22 → second page
+        assert "other — type a model id manually" in printed
+
+    def test_other_choice_accepts_manual_model_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_live_model_fetch
+    ) -> None:
+        """The "other" menu entry leads to a free-text prompt and stores the id."""
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr("spc.setup.list_chat_models", lambda *a, **k: ["m-one"])
+
+        def fake_prompt(message: str, *args: object, **kwargs: object) -> str:
+            text = str(message)
+            if "model choice" in text:
+                return "2"  # "other" entry (1 listed + 1)
+            if "model id" in text:
+                return "my-custom-model"
+            return ""
+
+        monkeypatch.setattr(setup_mod.typer, "prompt", fake_prompt)
+        run_setup(
+            _console(), non_interactive=False, provider_key="openai",
+            api_key="sk-other-1234567", skip_ping=True,
+        )
+        assert load_user_config().llm_model == "my-custom-model"
+
+    def test_model_flag_skips_listing_entirely(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--model must make NO listing call (no network attempt)."""
+        import spc.setup as setup_mod
+
+        calls = {"n": 0}
+
+        def forbidden(*args: object, **kwargs: object) -> list[str]:
+            calls["n"] += 1
+            return []
+
+        monkeypatch.setattr("spc.setup.list_chat_models", forbidden)
+        monkeypatch.setattr(setup_mod, "_fetch_live_models", forbidden)
+        exit_code = run_setup(
+            _console(), non_interactive=True, provider_key="openai",
+            api_key="sk-flag-12345678", model="gpt-6-luna", skip_ping=True,
+        )
+        assert exit_code == 0
+        assert calls["n"] == 0
+        assert load_user_config().llm_model == "gpt-6-luna"
+
+    def test_fetch_copilot_uses_token_exchange_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_live_model_fetch
+    ) -> None:
+        """Copilot provider: the fetch resolves the short-lived token first."""
+        import spc.setup as setup_mod
+        from spc.copilot import CopilotToken
+
+        captured: dict[str, object] = {}
+
+        def fake_list(provider_kind, base_url, api_key=None, extra_headers=None, copilot_token=None):
+            captured["kind"] = provider_kind
+            captured["token"] = copilot_token
+            return ["gpt-4.1"]
+
+        monkeypatch.setattr("spc.setup.list_chat_models", fake_list)
+
+        def fake_prepare(llm, oauth_token, client=None):
+            assert oauth_token == "gho_STORED", "stored OAuth token must reach the exchange"
+            return CopilotToken(token="shortlived", api_base="https://api.individual.githubcopilot.com"), {}
+
+        monkeypatch.setattr("spc.copilot.prepare_call_parts", fake_prepare)
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        save_user_config(user_config_path(), copilot_github_token="gho_STORED")
+        monkeypatch.setattr(setup_mod.typer, "prompt", lambda *a, **k: "1")
+        monkeypatch.setattr(setup_mod.typer, "confirm", lambda *a, **k: False)
+        console = _console()
+        run_setup(
+            console, non_interactive=False, provider_key="copilot", skip_ping=True,
+        )
+        assert captured["kind"] == "copilot"
+        assert captured["token"] == CopilotToken(token="shortlived", api_base="https://api.individual.githubcopilot.com")
+        assert load_user_config().llm_model == "gpt-4.1"
