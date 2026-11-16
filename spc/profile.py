@@ -153,21 +153,24 @@ def build_profile(
 
     *extra_evidence_md* is an optional pre-rendered markdown section for
     additional evidence sources (step 2 will pass GitHub PR/comment themes
-    here). Empty for git-only runs. Raises :class:`spc.llm.LlmError` on failure —
-    the caller decides fail-soft behavior.
+    here). Empty for git-only runs. Raises :class:`spc.llm.LlmError` (or
+    :class:`spc.copilot.CopilotError`) on failure — the caller decides
+    fail-soft behavior.
     """
-    from spc.userconfig import resolve_api_key
+    from spc.provider import resolve_provider_params
 
     prompt = _render_synthesis_prompt(evidence, extra_evidence_md)
+    base_url, api_key, extra_headers = resolve_provider_params(config)
     return llm.complete(
         [
             {"role": "system", "content": _SYNTHESIS_SYSTEM},
             {"role": "user", "content": prompt},
         ],
         model=config.llm.model,
-        base_url=config.llm.base_url,
-        api_key=resolve_api_key(config.llm),
+        base_url=base_url,
+        api_key=api_key,
         timeout=config.llm.timeout,
+        extra_headers=extra_headers or None,
     )
 
 

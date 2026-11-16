@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 First public release: a local, LLM-powered second opinion on every `git push`.
 
+### Fixed
+
+- With `provider = "copilot"`, `spc learn` (profile synthesis + PR theme
+  clustering) sent requests without a Copilot token and failed with HTTP 400.
+  Provider-aware LLM resolution now lives in one shared place
+  (`spc/provider.py`) used by reviews, learn, clustering, and the setup
+  connection test alike.
+
 ### Added
 
 - `spc init` — one-command wiring: writes `.spc.toml` (committed, team-shared),

@@ -15,6 +15,7 @@ from spc.conventions import ConventionFile
 from spc.copilot import CopilotError
 from spc.diff import DiffResult
 from spc.languages import EXTENSION_LANGUAGE, LANGUAGE_HINTS
+from spc.provider import resolve_provider_params
 
 MAX_FINDINGS = 10
 SEVERITY_ORDER = {"critical": 0, "warn": 1, "nit": 2}
@@ -266,14 +267,7 @@ def run_review(
 def _llm_call_params(config: SpcConfig) -> tuple[str, str | None, dict[str, str]]:
     """(base_url, api_key, extra_headers) for the configured provider.
 
-    Copilot resolves its OAuth token through the usual precedence, exchanges
-    it for a short-lived API token, and requires extra headers; other
-    providers resolve a plain API key.
+    Thin wrapper over the shared resolver (spc/provider.py) so reviews, learn
+    synthesis, clustering, and the setup ping all behave identically.
     """
-    from spc import copilot as copilot_mod
-    from spc.userconfig import resolve_api_key, resolve_copilot_token
-
-    if config.llm.provider == "copilot":
-        oauth_token = resolve_copilot_token(config.copilot.github_oauth_token)
-        return copilot_mod.prepare_llm_call(config.llm, oauth_token)
-    return config.llm.base_url, resolve_api_key(config.llm), {}
+    return resolve_provider_params(config)

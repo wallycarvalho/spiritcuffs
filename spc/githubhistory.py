@@ -307,17 +307,19 @@ def cluster_themes(evidence: GithubEvidence, config: SpcConfig) -> str | None:
     if not evidence.pulls and not evidence.comments:
         return None
     try:
-        from spc.userconfig import resolve_api_key
+        from spc.provider import resolve_provider_params
 
+        base_url, api_key, extra_headers = resolve_provider_params(config)
         return llm.complete(
             [
                 {"role": "system", "content": _CLUSTER_SYSTEM},
                 {"role": "user", "content": _render_cluster_prompt(evidence)},
             ],
             model=config.llm.model,
-            base_url=config.llm.base_url,
-            api_key=resolve_api_key(config.llm),
+            base_url=base_url,
+            api_key=api_key,
             timeout=config.llm.timeout,
+            extra_headers=extra_headers or None,
         )
     except Exception:  # noqa: BLE001 — theme clustering is best-effort by design
         return None

@@ -678,32 +678,18 @@ def _ping(console: Console, model: str) -> None:
     """One cheap live LLM call through the real plumbing; fail-soft output.
 
     Single attempt (no retry ladder) so a hanging endpoint can't stall the
-    wizard; auth resolution matches the review path (repo → user config → env)
-    so the ping can't fail where reviews would succeed.
+    wizard; auth resolution goes through the shared provider resolver
+    (spc/provider.py) — the exact path reviews and learn use.
     """
-    from spc import copilot as copilot_mod
     from spc import llm
+    from spc.copilot import CopilotError
     from spc.diff import find_repo_root
-    from spc.userconfig import resolve_api_key, resolve_copilot_token
+    from spc.provider import resolve_provider_params
 
     repo_root = find_repo_root()
     config = load_config(repo_root) if repo_root is not None else None
-    llm_config = config.llm if config is not None else LlmConfig()
     try:
-        # Branch on the MERGED config's provider — exactly what run_review
-        # branches on — so the ping tests the endpoint reviews will use even
-        # after a partial provider switch.
-        if llm_config.provider == "copilot":
-            oauth_token = resolve_copilot_token(
-                config.copilot.github_oauth_token if config is not None else None
-            )
-            base_url, api_key, extra_headers = copilot_mod.prepare_llm_call(
-                llm_config, oauth_token
-            )
-        else:
-            base_url = llm_config.base_url
-            api_key = resolve_api_key(llm_config)
-            extra_headers = {}
+        base_url, api_key, extra_headers = resolve_provider_params(config)
         text = llm.complete(
             [{"role": "user", "content": "ping — reply with the single word: pong"}],
             model=model,
@@ -713,7 +699,7 @@ def _ping(console: Console, model: str) -> None:
             attempts=1,
             extra_headers=extra_headers or None,
         )
-    except (llm.LlmError, copilot_mod.CopilotError) as exc:
+    except (llm.LlmError, CopilotError) as exc:
         console.print(f"[yellow]connection test failed:[/] {exc}")
         console.print("[dim]check base_url / model / key, then re-run `spc setup`.[/]")
         return
