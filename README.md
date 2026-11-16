@@ -217,13 +217,6 @@ setup use `spc setup --non-interactive --provider <p> --api-key-env <VAR>
 **Windows**: the pre-push hook runs via `sh` (Git for Windows ships one);
 Python must be on PATH in that shell.
 
-## Roadmap
-
-- **v1 (this)**: local harness — git + GitHub PR/comment mining, LLM profile,
-  push review, setup wizard, npm wrapper
-- **v1.1**: feedback marking in `spc history`; keychain/keyring storage for keys
-- **v2**: calibration engine learning from your accept/dismiss feedback
-
 ## Development
 
 ```bash
