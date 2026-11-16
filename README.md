@@ -1,3 +1,7 @@
+<img width="500" alt="yuyu" src="https://github.com/user-attachments/assets/37cf392e-c7f8-43b6-b65d-7f43c693c238" />
+
+
+
 # SpiritCuffs (`spc`)
 
 An LLM-powered second opinion on every `git push` — before it happens.
