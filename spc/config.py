@@ -25,6 +25,22 @@ class LlmConfig:
     # committed — the wizard never writes the key here; this field exists so a
     # user MAY choose it consciously. Usually left empty (user config / env).
     api_key: str = ""
+    # "generic" (OpenAI-compatible key auth) or "copilot" (GitHub Copilot:
+    # OAuth token exchanged per-run for a short-lived API token — see
+    # spc/copilot.py). Unknown values fall back to "generic" at call sites.
+    provider: str = "generic"
+
+
+@dataclass(frozen=True)
+class CopilotConfig:
+    """GitHub Copilot settings (``[copilot]`` in .spc.toml).
+
+    ``github_oauth_token`` here is a convenience for repo-local setup — the
+    token is long-lived, so the user-level config (mode 0600, never committed)
+    is the recommended home; see :func:`spc.userconfig.resolve_copilot_token`.
+    """
+
+    github_oauth_token: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,6 +88,7 @@ class SpcConfig:
     secrets: SecretsConfig = field(default_factory=SecretsConfig)
     learn: LearnConfig = field(default_factory=LearnConfig)
     github: GithubConfig = field(default_factory=GithubConfig)
+    copilot: CopilotConfig = field(default_factory=CopilotConfig)
 
 
 def config_path(repo_root: Path) -> Path:
@@ -186,6 +203,7 @@ def load_config(repo_root: Path) -> SpcConfig:
         secrets=_section(SecretsConfig, raw.get("secrets", {})),
         learn=_section(LearnConfig, raw.get("learn", {})),
         github=_section(GithubConfig, raw.get("github", {})),
+        copilot=_section(CopilotConfig, raw.get("copilot", {})),
     )
 
 
@@ -219,6 +237,11 @@ def _apply_user_llm_defaults(llm: LlmConfig) -> LlmConfig:
         ),
         timeout=llm.timeout,
         api_key=llm.api_key,
+        provider=(
+            llm.provider
+            if llm.provider != LlmConfig.provider and llm.provider
+            else (user.llm_provider or llm.provider)
+        ),
     )
 
 
@@ -249,6 +272,12 @@ base_url = "https://api.github.com"  # change for GitHub Enterprise
 github_max_prs = 200       # most recent merged PRs to mine
 github_max_comments = 1000 # total inline review comments fetched
 github_pages_max = 10      # API pagination cap
+
+[copilot]
+# provider = "copilot" in [llm] above switches auth to GitHub Copilot; the
+# OAuth token usually lives in the user config (spc setup → Copilot login).
+# GitHub Enterprise is not supported yet.
+github_oauth_token = ""    # GitHub OAuth token from the device-flow login
 '''
 
 

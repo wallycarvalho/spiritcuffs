@@ -12,6 +12,7 @@ from rich.console import Console
 from spc import llm
 from spc.config import SpcConfig
 from spc.conventions import ConventionFile
+from spc.copilot import CopilotError
 from spc.diff import DiffResult
 from spc.languages import EXTENSION_LANGUAGE, LANGUAGE_HINTS
 
@@ -245,17 +246,34 @@ def run_review(
     output = ReviewOutput(model=config.llm.model)
     prompt = build_prompt(diff, profile, conventions, config, hotspot_paths=hotspot_paths)
     try:
-        from spc.userconfig import resolve_api_key
 
+        base_url, api_key, extra_headers = _llm_call_params(config)
         raw = llm.complete(
             [{"role": "user", "content": prompt}],
             model=config.llm.model,
-            base_url=config.llm.base_url,
-            api_key=resolve_api_key(config.llm),
+            base_url=base_url,
+            api_key=api_key,
             timeout=config.llm.timeout,
+            extra_headers=extra_headers or None,
         )
-    except llm.LlmError as exc:
+    except (llm.LlmError, CopilotError) as exc:
         console.print(f"[yellow]spiritcuffs:[/] LLM review failed ({exc}); continuing.")
         return output
     output.findings = cap_findings(parse_findings(raw))
     return output
+
+
+def _llm_call_params(config: SpcConfig) -> tuple[str, str | None, dict[str, str]]:
+    """(base_url, api_key, extra_headers) for the configured provider.
+
+    Copilot resolves its OAuth token through the usual precedence, exchanges
+    it for a short-lived API token, and requires extra headers; other
+    providers resolve a plain API key.
+    """
+    from spc import copilot as copilot_mod
+    from spc.userconfig import resolve_api_key, resolve_copilot_token
+
+    if config.llm.provider == "copilot":
+        oauth_token = resolve_copilot_token(config.copilot.github_oauth_token)
+        return copilot_mod.prepare_llm_call(config.llm, oauth_token)
+    return config.llm.base_url, resolve_api_key(config.llm), {}

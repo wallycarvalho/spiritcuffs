@@ -294,7 +294,7 @@ def setup(
         False, "--non-interactive", "-y", help="No prompts; use flags + stored config."
     ),
     provider: str | None = typer.Option(
-        None, "--provider", help="openrouter | openai | anthropic | ollama"
+        None, "--provider", help="openrouter | openai | anthropic | copilot | ollama"
     ),
     api_key: str | None = typer.Option(
         None, "--api-key", help="API key value (stored user-level, mode 600)."
@@ -309,6 +309,11 @@ def setup(
     ),
     github_token_env: str | None = typer.Option(
         None, "--github-token-env", help="GitHub token env var NAME (not stored on disk)."
+    ),
+    copilot_token: str | None = typer.Option(
+        None,
+        "--copilot-token",
+        help="GitHub OAuth token for Copilot (stored user-level, mode 600).",
     ),
     strict: bool | None = typer.Option(None, "--strict/--no-strict", help="Review strict mode."),
     show_nits: bool | None = typer.Option(
@@ -330,6 +335,7 @@ def setup(
             base_url=base_url,
             github_token=github_token,
             github_token_env=github_token_env,
+            copilot_token=copilot_token,
             strict=strict,
             show_nits=show_nits,
             skip_ping=skip_ping,

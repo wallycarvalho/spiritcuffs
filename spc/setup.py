@@ -43,6 +43,9 @@ class Provider:
     base_url: str
     model: str
     api_key_env: str
+    # "api_key" providers take a normal OpenAI-compatible key; "copilot"
+    # providers run the GitHub device-flow login instead (spc/copilot.py).
+    kind: str = "api_key"
 
 
 PROVIDERS: tuple[Provider, ...] = (
@@ -68,6 +71,17 @@ PROVIDERS: tuple[Provider, ...] = (
         api_key_env="ANTHROPIC_API_KEY",
     ),
     Provider(
+        key="copilot",
+        label="GitHub Copilot (uses your existing Copilot subscription)",
+        # Base URL is per-run from the token exchange (endpoints.api); this
+        # placeholder is overridden by the copilot auth path at call time.
+        base_url="https://api.githubcopilot.com",
+        # Copilot plan gates model access; gpt-4.1-mini is broadly available.
+        model="gpt-4.1-mini",
+        api_key_env="COPILOT_GITHUB_TOKEN",
+        kind="copilot",
+    ),
+    Provider(
         key="ollama",
         label="Local endpoint (Ollama / LM Studio / vLLM)",
         base_url="http://localhost:11434/v1",
@@ -86,6 +100,7 @@ MODEL_SHORTLISTS: dict[str, tuple[str, ...]] = {
     ),
     "openai": ("gpt-4o-mini", "gpt-4o", "o3-mini"),
     "anthropic": ("claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"),
+    "copilot": ("gpt-4.1-mini", "gpt-4.1", "o4-mini"),
     "ollama": ("llama3.1", "qwen2.5-coder", "mistral"),
 }
 
@@ -120,6 +135,7 @@ def run_setup(
     base_url: str | None = None,
     github_token: str | None = None,
     github_token_env: str | None = None,
+    copilot_token: str | None = None,
     strict: bool | None = None,
     show_nits: bool | None = None,
     skip_ping: bool = False,
@@ -141,6 +157,7 @@ def run_setup(
             base_url=base_url,
             github_token=github_token,
             github_token_env=github_token_env,
+            copilot_token=copilot_token,
             strict=strict,
             show_nits=show_nits,
             skip_ping=skip_ping,
@@ -164,6 +181,7 @@ def _run_setup_inner(  # noqa: PLR0913 — a wizard genuinely has this many knob
     base_url: str | None,
     github_token: str | None,
     github_token_env: str | None,
+    copilot_token: str | None,
     strict: bool | None,
     show_nits: bool | None,
     skip_ping: bool,
@@ -174,9 +192,12 @@ def _run_setup_inner(  # noqa: PLR0913 — a wizard genuinely has this many knob
         console, non_interactive, provider_key, base_url, api_key_env, user
     )
 
-    _step_api_key(
-        console, non_interactive, provider, user, api_key=api_key, api_key_env=api_key_env
-    )
+    if provider.kind == "copilot":
+        _step_copilot(console, non_interactive, provider, copilot_token=copilot_token)
+    else:
+        _step_api_key(
+            console, non_interactive, provider, user, api_key=api_key, api_key_env=api_key_env
+        )
     final_model = _step_model(console, non_interactive, provider, user, model)
     _step_github_token(
         console, non_interactive, user,
@@ -184,7 +205,7 @@ def _run_setup_inner(  # noqa: PLR0913 — a wizard genuinely has this many knob
     )
     _step_preferences(console, non_interactive, strict=strict, show_nits=show_nits)
     if not skip_ping:
-        _ping(console, provider.base_url, final_model)
+        _ping(console, provider, final_model)
     _offer_repo_wiring(console, non_interactive)
     console.print("[green]setup complete.[/]")
     return 0
@@ -203,6 +224,7 @@ def _provider_by_key(
         base_url=base_url or matched.base_url,
         model=model or matched.model,
         api_key_env=api_key_env or matched.api_key_env,
+        kind=matched.kind,
     )
 
 
@@ -229,6 +251,7 @@ def _resolve_provider(
             return Provider(
                 key=matched.key, label=matched.label, base_url=matched.base_url,
                 model=user.llm_model or matched.model, api_key_env=current_env,
+                kind=matched.kind,
             )
         return fallback
     choices = [f"{p.label}  [dim]({p.base_url})[/]" for p in PROVIDERS]
@@ -241,6 +264,7 @@ def _resolve_provider(
         key=matched.key, label=matched.label,
         base_url=base_url or matched.base_url,
         model=matched.model, api_key_env=api_key_env or matched.api_key_env,
+        kind=matched.kind,
     )
 
 
@@ -323,6 +347,70 @@ def _step_api_key(
             f"[green]will use env var[/] [bold]{env_name}[/] "
             "(export it yourself; the key never touches disk)"
         )
+
+
+def _step_copilot(
+    console: Console,
+    non_interactive: bool,
+    provider: Provider,
+    *,
+    copilot_token: str | None,
+) -> None:
+    """Copilot auth: device-flow login (interactive) or --copilot-token (CI).
+
+    Only the long-lived GitHub OAuth token is stored (user config, mode 600);
+    the short-lived Copilot API token from the per-run exchange is never
+    persisted. GitHub Enterprise is not supported yet.
+    """
+    from spc import copilot
+    from spc.userconfig import resolve_copilot_token
+
+    existing = resolve_copilot_token()
+    if copilot_token is not None:
+        save_user_config(
+            user_config_path(),
+            copilot_github_token=copilot_token,
+            llm_base_url=provider.base_url,
+            llm_model=provider.model,
+            llm_provider="copilot",
+        )
+        console.print(
+            f"[green]Copilot GitHub token stored[/] in {user_config_path()} "
+            f"({mask_secret(copilot_token)})"
+        )
+        return
+    if non_interactive:
+        if existing:
+            console.print(f"Copilot: using stored GitHub token ({mask_secret(existing)})")
+            return
+        console.print(
+            "[yellow]Copilot selected but no GitHub token — run `spc setup` "
+            "interactively for the device-flow login, or pass "
+            "--copilot-token <github-oauth-token>.[/]"
+        )
+        return
+    if existing and not typer.confirm(
+        f"GitHub Copilot: a token is already stored ({mask_secret(existing)}). "
+        "Log in again?",
+        default=False,
+    ):
+        return
+    try:
+        oauth_token = copilot.login(console.print)
+    except copilot.CopilotError as exc:
+        console.print(f"[yellow]Copilot login failed:[/] {exc}")
+        return
+    save_user_config(
+        user_config_path(),
+        copilot_github_token=oauth_token,
+        llm_base_url=provider.base_url,
+        llm_model=provider.model,
+        llm_provider="copilot",
+    )
+    console.print(
+        f"[green]Copilot login complete[/] — token stored in {user_config_path()} "
+        f"({mask_secret(oauth_token)})"
+    )
 
 
 def _step_model(
@@ -483,22 +571,33 @@ def _step_preferences(
         console.print("[yellow]spiritcuffs: could not update .spc.toml — skipping.[/]")
 
 
-def _ping(console: Console, base_url: str, model: str) -> None:
+def _ping(console: Console, provider: Provider, model: str) -> None:
     """One cheap live LLM call through the real plumbing; fail-soft output.
 
     Single attempt (no retry ladder) so a hanging endpoint can't stall the
-    wizard; key resolution matches the review path (repo api_key → user
-    config → env) so the ping can't fail where reviews would succeed.
+    wizard; auth resolution matches the review path (repo → user config → env)
+    so the ping can't fail where reviews would succeed.
     """
+    from spc import copilot as copilot_mod
     from spc import llm
     from spc.diff import find_repo_root
-    from spc.userconfig import resolve_api_key
+    from spc.userconfig import resolve_api_key, resolve_copilot_token
 
     repo_root = find_repo_root()
     config = load_config(repo_root) if repo_root is not None else None
     llm_config = config.llm if config is not None else LlmConfig()
-    api_key = resolve_api_key(llm_config)
     try:
+        if provider.kind == "copilot":
+            oauth_token = resolve_copilot_token(
+                config.copilot.github_oauth_token if config is not None else None
+            )
+            base_url, api_key, extra_headers = copilot_mod.prepare_llm_call(
+                llm_config, oauth_token
+            )
+        else:
+            base_url = provider.base_url
+            api_key = resolve_api_key(llm_config)
+            extra_headers = {}
         text = llm.complete(
             [{"role": "user", "content": "ping — reply with the single word: pong"}],
             model=model,
@@ -506,8 +605,9 @@ def _ping(console: Console, base_url: str, model: str) -> None:
             api_key=api_key,
             timeout=15.0,
             attempts=1,
+            extra_headers=extra_headers or None,
         )
-    except llm.LlmError as exc:
+    except (llm.LlmError, copilot_mod.CopilotError) as exc:
         console.print(f"[yellow]connection test failed:[/] {exc}")
         console.print("[dim]check base_url / model / key, then re-run `spc setup`.[/]")
         return

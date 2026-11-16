@@ -29,6 +29,8 @@ class UserConfig:
     llm_base_url: str | None = None
     llm_model: str | None = None
     llm_api_key_env: str | None = None
+    copilot_github_token: str | None = None
+    llm_provider: str | None = None
 
 
 def user_config_path() -> Path:
@@ -60,12 +62,15 @@ def load_user_config(path: Path | None = None) -> UserConfig:
         return UserConfig()
     llm = raw.get("llm", {})
     github = raw.get("github", {})
+    copilot = raw.get("copilot", {})
     return UserConfig(
         llm_api_key=_nonempty_str(llm.get("api_key")),
         github_token=_nonempty_str(github.get("token")),
         llm_base_url=_nonempty_str(llm.get("base_url")),
         llm_model=_nonempty_str(llm.get("model")),
         llm_api_key_env=_nonempty_str(llm.get("api_key_env")),
+        copilot_github_token=_nonempty_str(copilot.get("github_oauth_token")),
+        llm_provider=_nonempty_str(llm.get("provider")),
     )
 
 
@@ -84,6 +89,8 @@ def save_user_config(
     llm_base_url: str | None = None,
     llm_model: str | None = None,
     llm_api_key_env: str | None = None,
+    copilot_github_token: str | None = None,
+    llm_provider: str | None = None,
 ) -> None:
     """Merge fields into the user config and write it with mode 0600.
 
@@ -94,6 +101,7 @@ def save_user_config(
     data: dict[str, dict[str, str]] = {}
     llm: dict[str, str] = {}
     github: dict[str, str] = {}
+    copilot: dict[str, str] = {}
     if llm_api_key is not None or existing.llm_api_key is not None:
         llm["api_key"] = llm_api_key if llm_api_key is not None else existing.llm_api_key  # type: ignore[assignment]
     if llm_base_url is not None or existing.llm_base_url is not None:
@@ -106,10 +114,22 @@ def save_user_config(
         )
     if github_token is not None or existing.github_token is not None:
         github["token"] = github_token if github_token is not None else existing.github_token  # type: ignore[assignment]
+    if copilot_github_token is not None or existing.copilot_github_token is not None:
+        copilot["github_oauth_token"] = (
+            copilot_github_token
+            if copilot_github_token is not None
+            else existing.copilot_github_token
+        )  # type: ignore[assignment]
+    if llm_provider is not None or existing.llm_provider is not None:
+        llm["provider"] = (
+            llm_provider if llm_provider is not None else existing.llm_provider
+        )  # type: ignore[assignment]
     if llm:
         data["llm"] = llm
     if github:
         data["github"] = github
+    if copilot:
+        data["copilot"] = copilot
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(tomli_w.dumps(data), encoding="utf-8")
     path.chmod(0o600)
@@ -151,6 +171,22 @@ def resolve_github_token() -> str | None:
     from spc.githubapi import resolve_token
 
     return resolve_token()
+
+
+def resolve_copilot_token(repo_oauth_token: str | None = None) -> str | None:
+    """Copilot OAuth token resolution: repo ``.spc.toml`` → user config → env var.
+
+    *repo_oauth_token* is the ``[copilot] github_oauth_token`` value from the
+    repo config (may be empty). The env fallback is ``COPILOT_GITHUB_TOKEN``
+    for CI setups that prefer not to persist the token at all.
+    """
+    repo_token = (repo_oauth_token or "").strip()
+    if repo_token:
+        return repo_token
+    user = load_user_config()
+    if user.copilot_github_token:
+        return user.copilot_github_token
+    return os.environ.get("COPILOT_GITHUB_TOKEN") or None
 
 
 def mask_secret(value: str | None) -> str:

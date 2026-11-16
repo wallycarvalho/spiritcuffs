@@ -41,17 +41,21 @@ def complete(
     api_key: str | None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     attempts: int = MAX_ATTEMPTS,
+    extra_headers: dict[str, str] | None = None,
 ) -> str:
     """Send one chat-completion request and return the assistant text.
 
     Retries transient failures (429/5xx/timeouts) up to *attempts* times with
     linear backoff. Raises :class:`LlmError` when all attempts fail — callers
     are expected to fail soft. Pass ``attempts=1`` for single-shot probes
-    (connection tests) that must not linger.
+    (connection tests) that must not linger. *extra_headers* are merged last
+    (provider-specific requirements, e.g. Copilot's Openai-Intent header).
     """
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
 
     payload: dict[str, Any] = {"model": model, "messages": messages}
     url = f"{base_url.rstrip('/')}/chat/completions"
