@@ -763,7 +763,7 @@ def test_learn_skip_notice_reflects_api_error(git_repo, monkeypatch) -> None:
     console = Console(file=io.StringIO(), force_terminal=False)
     _mine_github_source(repo, SpcConfig(), console)
     output = console.file.getvalue()  # type: ignore[union-attr]
-    assert "unreachable" in output
+    assert "API rejected us" in output
     assert "no new merged PRs since the last run" not in output
 
 

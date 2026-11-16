@@ -58,10 +58,12 @@ def run_learn(repo_root: Path, config: SpcConfig, console: Console) -> bool:
     console.print("[bold]spiritcuffs:[/] synthesizing profile with LLM…")
     try:
         profile_md = build_profile(evidence, config, extra_evidence_md=extra_evidence_md)
-    except Exception:  # noqa: BLE001 — fail soft by design; LlmError or httpx errors
+    except Exception as exc:  # noqa: BLE001 — fail soft by design; LlmError or httpx errors
+        reason = str(exc).strip() or type(exc).__name__
         console.print(
-            "[yellow]spiritcuffs:[/] profile synthesis failed — "
-            "run `spc learn` again later. Continuing without a profile."
+            "[yellow]spiritcuffs:[/] profile synthesis failed "
+            f"({reason}) — run `spc learn` again later. "
+            "Continuing without a profile."
         )
         return False
 
@@ -175,7 +177,10 @@ def _skip_reason(repo_root: Path, config: SpcConfig) -> str:
         "stopped_reason", "complete"
     ).startswith(("rate_limit", "budget", "error")):
         return "GitHub mining skipped — no new merged PRs since the last run."
-    return "GitHub mining skipped (no new merged PRs, or the API was unreachable)."
+    return (
+        "GitHub mining skipped — no merged PRs found, or the API rejected us "
+        "(check `gh auth status` / GITHUB_TOKEN, or the repo has no PRs yet)."
+    )
 
 
 def _cached_github_section(repo_root: Path) -> str:
