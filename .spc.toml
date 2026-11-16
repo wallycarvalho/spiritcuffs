@@ -4,8 +4,8 @@ model = "anthropic/claude-3.5-haiku"        # fast/cheap default; your choice
 api_key_env = "SPC_API_KEY"                 # env var holding the key
 
 [review]
-show_nits = false          # nits hidden by default (signal, not noise)
-strict = false             # true => exit 1 on a critical finding (blocks push)
+show_nits = false  # nits hidden by default (signal, not noise)
+strict = false  # true => exit 1 on a critical finding (blocks push)
 max_diff_kb = 200          # diff truncation ceiling; dropped files listed
 cache_diff_hash = true     # reprint cached findings on identical re-review
 

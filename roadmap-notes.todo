@@ -1,3 +1,8 @@
 To be considered:
   ☐ install CLI via npx as well for npm packages
   ☐ well thought-out CLI commands for common tasks and onboarding
+  ☐ needs command to clear onboarding - restart auth from scratch
+  ☐ the onboarding question on pr mining / strict mode doesnt tell me what that is for? need better explanation
+  ☐ .spc.toml editor strips column alignment on comments (cosmetic churn in diffs)
+  ☐ setup ping failing with model_not_supported should offer next shortlist entry (plan/integrator-gated models are common)
+  ☐ parked review minors: step-1 items 8-10 (hook chmod, history dict assumption, duplicated defaults), step-2 minors (comments cap 50/PR, pages_max on comments, late-merged PR watermark, 403/429 sleep-once, dead REMOTE_TIMEOUT_SECONDS, case-sensitive host match)
