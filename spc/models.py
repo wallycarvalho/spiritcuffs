@@ -12,9 +12,12 @@ line, and falls back to the curated shortlist. Fail-soft by construction.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from spc.copilot import CopilotToken
 
 LIST_TIMEOUT_SECONDS = 15.0
 
@@ -38,8 +41,7 @@ def list_chat_models(
     provider_kind: str,
     base_url: str,
     api_key: str | None = None,
-    extra_headers: dict[str, str] | None = None,
-    copilot_token: Any | None = None,
+    copilot_token: CopilotToken | None = None,
 ) -> list[str]:
     """Fetch the provider's model list, filtered to chat-completions-capable ids.
 
@@ -62,7 +64,6 @@ def list_chat_models(
     return fetcher(
         base_url=base_url,
         api_key=api_key,
-        extra_headers=extra_headers,
         copilot_token=copilot_token,
     )
 
@@ -95,15 +96,12 @@ def _extract_ids(body: dict[str, Any]) -> list[str]:
 
 
 def _fetch_openai(
-    *, base_url: str, api_key: str | None, extra_headers: dict[str, str] | None,
-    copilot_token: Any | None,
+    *, base_url: str, api_key: str | None, copilot_token: CopilotToken | None,
 ) -> list[str]:
     """OpenAI: GET {base}/models with Bearer auth; filter non-chat name families."""
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    if extra_headers:
-        headers.update(extra_headers)
     ids = _extract_ids(_get_json(f"{base_url.rstrip('/')}/models", headers))
     return [model_id for model_id in ids if not _is_non_chat_name(model_id)]
 
@@ -115,15 +113,12 @@ def _is_non_chat_name(model_id: str) -> bool:
 
 
 def _fetch_openrouter(
-    *, base_url: str, api_key: str | None, extra_headers: dict[str, str] | None,
-    copilot_token: Any | None,
+    *, base_url: str, api_key: str | None, copilot_token: CopilotToken | None,
 ) -> list[str]:
     """OpenRouter: GET /models; keep ids whose output modalities include text."""
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    if extra_headers:
-        headers.update(extra_headers)
     body = _get_json(f"{base_url.rstrip('/')}/models", headers)
     entries = body.get("data")
     if not isinstance(entries, list):
@@ -159,23 +154,23 @@ def _output_modalities(entry: dict[str, Any]) -> list[str] | None:
 
 
 def _fetch_anthropic(
-    *, base_url: str, api_key: str | None, extra_headers: dict[str, str] | None,
-    copilot_token: Any | None,
+    *, base_url: str, api_key: str | None, copilot_token: CopilotToken | None,
 ) -> list[str]:
-    """Anthropic: GET {base}/v1/models with x-api-key; every listed model chats."""
+    """Anthropic: GET {base}/models with x-api-key; every listed model chats.
+
+    The provider base_url already ends in ``/v1`` (setup.py) — appending
+    another ``/v1`` produced ``/v1/v1/models`` and a guaranteed 404.
+    """
     headers = {
         "x-api-key": api_key or "",
         "anthropic-version": ANTHROPIC_VERSION,
     }
-    if extra_headers:
-        headers.update(extra_headers)
-    ids = _extract_ids(_get_json(f"{base_url.rstrip('/')}/v1/models", headers))
+    ids = _extract_ids(_get_json(f"{base_url.rstrip('/')}/models", headers))
     return ids
 
 
 def _fetch_copilot(
-    *, base_url: str, api_key: str | None, extra_headers: dict[str, str] | None,
-    copilot_token: Any | None,
+    *, base_url: str, api_key: str | None, copilot_token: CopilotToken | None,
 ) -> list[str]:
     """Copilot: GET {api_base}/models with the Copilot chat headers + Bearer token.
 
@@ -193,9 +188,11 @@ def _fetch_copilot(
         if copilot_token is not None and copilot_token.api_base
         else base_url
     )
-    headers = {**copilot_module.COPILOT_CHAT_HEADERS, "Authorization": f"Bearer {token}"}
-    if extra_headers:
-        headers.update(extra_headers)
+    headers = {
+        **copilot_module.COPILOT_CHAT_HEADERS,
+        "User-Agent": copilot_module.USER_AGENT,
+        "Authorization": f"Bearer {token}",
+    }
     body = _get_json(f"{api_base.rstrip('/')}/models", headers)
     entries = body.get("data")
     if not isinstance(entries, list):
@@ -225,24 +222,18 @@ def _supported_endpoints(entry: dict[str, Any]) -> list[str] | None:
 
 
 def _fetch_ollama(
-    *, base_url: str, api_key: str | None, extra_headers: dict[str, str] | None,
-    copilot_token: Any | None,
+    *, base_url: str, api_key: str | None, copilot_token: CopilotToken | None,
 ) -> list[str]:
-    """Ollama: GET {base}/api/tags; drop embed-flavored families, keep ids verbatim."""
-    body = _get_json(f"{base_url.rstrip('/')}/api/tags", {})
-    models = body.get("models")
-    if not isinstance(models, list):
-        raise ModelsError("model list response missing models[]")
-    kept: list[str] = []
-    for entry in models:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        if not _is_embed_family(name):
-            kept.append(name)
-    return kept
+    """Ollama: GET {base}/models (OpenAI-compat); drop embed families from the ids.
+
+    The OpenAI-compatible ``{base}/models`` endpoint is used — not Ollama's
+    native ``/api/tags``, which has no ``/v1`` prefix (the provider base_url
+    ends in ``/v1``) and which LM Studio / vLLM do not serve at all. LM
+    Studio and vLLM serve the same OpenAI-compat shape, so one endpoint
+    covers all three local runtimes.
+    """
+    ids = _extract_ids(_get_json(f"{base_url.rstrip('/')}/models", {}))
+    return [model_id for model_id in ids if not _is_embed_family(model_id)]
 
 
 def _is_embed_family(name: str) -> bool:

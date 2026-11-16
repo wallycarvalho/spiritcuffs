@@ -6,6 +6,7 @@ import io
 import stat
 from pathlib import Path
 
+import httpx
 import pytest
 import typer
 from rich.console import Console
@@ -540,7 +541,7 @@ class TestLiveModelListing:
 
         captured: dict[str, object] = {}
 
-        def fake_list(provider_kind, base_url, api_key=None, extra_headers=None, copilot_token=None):
+        def fake_list(provider_kind, base_url, api_key=None, copilot_token=None):
             captured["kind"] = provider_kind
             captured["token"] = copilot_token
             return ["gpt-4.1"]
@@ -563,3 +564,111 @@ class TestLiveModelListing:
         assert captured["kind"] == "copilot"
         assert captured["token"] == CopilotToken(token="shortlived", api_base="https://api.individual.githubcopilot.com")
         assert load_user_config().llm_model == "gpt-4.1"
+
+    def test_fetch_resolves_key_from_user_config_not_just_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_live_model_fetch
+    ) -> None:
+        """A key stored in user config (not env) must reach list_chat_models."""
+        import spc.setup as setup_mod
+
+        save_user_config(user_config_path(), llm_api_key="sk-stored-123456789")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        captured: dict[str, object] = {}
+
+        def fake_list(provider_kind, base_url, api_key=None, copilot_token=None):
+            captured["api_key"] = api_key
+            return ["m-one"]
+
+        monkeypatch.setattr("spc.setup.list_chat_models", fake_list)
+        prompts: list[str] = []
+
+        def fake_prompt(message: str, *args: object, **kwargs: object) -> str:
+            prompts.append(str(message))
+            return "1" if "model choice" in str(message) else ""
+
+        monkeypatch.setattr(setup_mod.typer, "prompt", fake_prompt)
+        console = _console()
+        exit_code = run_setup(
+            console, non_interactive=False, provider_key="openai", skip_ping=True,
+        )
+        assert exit_code == 0
+        assert captured["api_key"] == "sk-stored-123456789"
+        assert load_user_config().llm_model == "m-one"
+
+    def test_empty_live_list_falls_back_to_shortlist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_live_model_fetch
+    ) -> None:
+        """A successful fetch filtering to zero models must not empty the menu."""
+        import spc.setup as setup_mod
+
+        monkeypatch.setattr("spc.setup.list_chat_models", lambda *a, **k: [])
+        prompts: list[str] = []
+
+        def fake_prompt(message: str, *args: object, **kwargs: object) -> str:
+            prompts.append(str(message))
+            return "1" if "model choice" in str(message) else ""
+
+        monkeypatch.setattr(setup_mod.typer, "prompt", fake_prompt)
+        console = _console()
+        exit_code = run_setup(
+            console, non_interactive=False, provider_key="openai",
+            api_key="sk-empty-1234567", skip_ping=True,
+        )
+        assert exit_code == 0
+        printed = console.file.getvalue()
+        assert isinstance(printed, str)
+        assert "gpt-6-luna" in printed  # shortlist, not an "other"-only menu
+        assert load_user_config().llm_model == "gpt-6-luna"
+
+    def test_invalid_url_fetch_falls_back_softly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enable_live_model_fetch
+    ) -> None:
+        """httpx.InvalidURL (malformed stored base_url) must not abort the wizard."""
+        import spc.setup as setup_mod
+
+        def boom(*a: object, **k: object) -> list[str]:
+            raise httpx.InvalidURL("invalid port 'x' in url")
+
+        monkeypatch.setattr("spc.setup.list_chat_models", boom)
+        prompts: list[str] = []
+
+        def fake_prompt(message: str, *args: object, **kwargs: object) -> str:
+            prompts.append(str(message))
+            return "1" if "model choice" in str(message) else ""
+
+        monkeypatch.setattr(setup_mod.typer, "prompt", fake_prompt)
+        console = _console()
+        exit_code = run_setup(
+            console, non_interactive=False, provider_key="openai",
+            api_key="sk-badurl-123456", skip_ping=True,
+        )
+        assert exit_code == 0
+        printed = console.file.getvalue()
+        assert isinstance(printed, str)
+        assert "couldn't fetch model list" in printed
+        assert load_user_config().llm_model == "gpt-6-luna"  # shortlist fallback
+
+
+def test_kind_from_base_url_maps_known_base_urls_to_dispatch_keys() -> None:
+    """Known base_urls must dispatch to their provider's listing key, not 'api_key'.
+
+    Regression: _kind_from_base_url returned known.kind ("api_key") — a value
+    list_chat_models has no fetcher for — so every curated non-Copilot
+    provider silently fell back to the shortlist without any HTTP call.
+    """
+    from spc.setup import PROVIDERS, _kind_from_base_url
+
+    for provider in PROVIDERS:
+        if provider.kind == "copilot":
+            continue  # copilot never reaches _kind_from_base_url (kind check first)
+        assert _kind_from_base_url(provider) == provider.key
+    assert _kind_from_base_url(_custom_provider()) == "openai"
+
+
+def _custom_provider() -> object:
+    from spc.setup import Provider
+
+    return Provider(
+        key="custom", label="current", base_url="https://llm.example/v1",
+        model="m", api_key_env="SPC_API_KEY",
+    )

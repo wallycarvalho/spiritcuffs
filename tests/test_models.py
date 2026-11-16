@@ -78,16 +78,16 @@ def test_openai_happy_path_filters_non_chat(stub_get) -> None:
     stub_get(_json_response(body))
     result = list_chat_models("openai", "https://api.openai.com/v1", api_key="sk-test")
     assert result == ["gpt-6-luna", "gpt-4o-mini"]
-    call = stub_get and _last_call(stub_get)
+    call = _last_call(stub_get)
     assert call["url"] == "https://api.openai.com/v1/models"
     assert call["headers"]["Authorization"] == "Bearer sk-test"
 
 
-def test_openai_keeps_unsure_names(stub_get) -> None:
-    """Filtering is conservative: names that merely contain an innocuous substring stay."""
+def test_openai_drops_audio_family(stub_get) -> None:
+    """Audio-family names are dropped; innocuous unsure names (o4-mini) stay."""
     stub_get(_json_response({"data": [{"id": "o4-mini"}, {"id": "audio-transcribe-x"}]}))
     result = list_chat_models("openai", "https://api.openai.com/v1")
-    # "audio" pattern drops the transcribe model even though we're unsure
+    # "audio" pattern drops the transcribe model; o4-mini matches no pattern
     assert result == ["o4-mini"]
 
 
@@ -137,7 +137,7 @@ def test_anthropic_happy_path_no_filter(stub_get) -> None:
     result = list_chat_models("anthropic", "https://api.anthropic.com/v1", api_key="sk-ant")
     assert result == ["claude-3-5-haiku-latest", "claude-sonnet-4-5"]
     call = _last_call(stub_get)
-    assert call["url"] == "https://api.anthropic.com/v1/v1/models"
+    assert call["url"] == "https://api.anthropic.com/v1/models"
     assert call["headers"]["x-api-key"] == "sk-ant"
     assert call["headers"]["anthropic-version"] == "2023-06-01"
 
@@ -168,7 +168,7 @@ def test_copilot_endpoints_field_variants(stub_get, field: str) -> None:
 
 
 def test_copilot_uses_chat_headers_and_token_api_base(stub_get) -> None:
-    from spc.copilot import COPILOT_CHAT_HEADERS, CopilotToken
+    from spc.copilot import COPILOT_CHAT_HEADERS, USER_AGENT, CopilotToken
 
     stub_get(_json_response({"data": [{"id": "gpt-4.1", "endpoints": ["/chat_completions"]}]}))
     token = CopilotToken(token="shortlived", api_base="https://api.individual.githubcopilot.com")
@@ -177,6 +177,7 @@ def test_copilot_uses_chat_headers_and_token_api_base(stub_get) -> None:
     call = _last_call(stub_get)
     assert call["url"] == "https://api.individual.githubcopilot.com/models"
     assert call["headers"]["Authorization"] == "Bearer shortlived"
+    assert call["headers"]["User-Agent"] == USER_AGENT
     for header, value in COPILOT_CHAT_HEADERS.items():
         assert call["headers"][header] == value
 
@@ -195,11 +196,11 @@ def test_copilot_entry_without_endpoints_field_is_kept(stub_get) -> None:
 
 def test_ollama_filters_embed_families_keeps_rest_verbatim(stub_get) -> None:
     body = {
-        "models": [
-            {"name": "llama3.1:latest", "digest": "abc"},
-            {"name": "nomic-embed-text", "details": {"family": "embed"}},
-            {"name": "bge-m3"},
-            {"name": "qwen2.5-coder:7b"},
+        "data": [
+            {"id": "llama3.1:latest"},
+            {"id": "nomic-embed-text"},
+            {"id": "bge-m3"},
+            {"id": "qwen2.5-coder:7b"},
         ]
     }
     stub_get(_json_response(body))
@@ -207,10 +208,11 @@ def test_ollama_filters_embed_families_keeps_rest_verbatim(stub_get) -> None:
     assert result == ["llama3.1:latest", "qwen2.5-coder:7b"]
 
 
-def test_ollama_hits_tags_endpoint(stub_get) -> None:
-    stub_get(_json_response({"models": [{"name": "llama3.1"}]}))
+def test_ollama_hits_openai_compat_models_endpoint(stub_get) -> None:
+    """The OpenAI-compat /models endpoint — not Ollama's /api/tags (no /v1)."""
+    stub_get(_json_response({"data": [{"id": "llama3.1"}]}))
     list_chat_models("ollama", "http://localhost:11434/v1")
-    assert _last_call(stub_get)["url"] == "http://localhost:11434/v1/api/tags"
+    assert _last_call(stub_get)["url"] == "http://localhost:11434/v1/models"
 
 
 # ---------------------------------------------------------------------------

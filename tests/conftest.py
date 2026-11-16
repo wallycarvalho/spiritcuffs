@@ -108,11 +108,12 @@ def enable_live_model_fetch(monkeypatch: pytest.MonkeyPatch):
 
     Used by the TestLiveModelListing tests: they stub
     ``spc.setup.list_chat_models`` (the network boundary inside the fetch) and
-    need the fetch itself live. Yields the spc.setup module for asserting on
+    need the fetch itself live. Reads ``spc.setup._FETCH_LIVE_MODELS_REAL``
+    (captured after the original ``_fetch_live_models`` definition). Yields the spc.setup module for asserting on
     patch targets.
     """
     import spc.setup as setup_mod
 
-    real = setup_mod.__fetch_live_models_real__
+    real = setup_mod._FETCH_LIVE_MODELS_REAL
     monkeypatch.setattr(setup_mod, "_fetch_live_models", real)
     return setup_mod

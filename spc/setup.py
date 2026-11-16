@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from spc.config import LlmConfig, load_config
-from spc.models import ModelsError, list_chat_models
+from spc.models import list_chat_models
 from spc.userconfig import (
     UserConfig,
     load_user_config,
@@ -106,10 +106,11 @@ PROVIDERS: tuple[Provider, ...] = (
 # 2026-10-23, PASSED).
 # Copilot model availability is gated by plan AND integrator; the catalog's
 # policy:enabled flag is only a hint (models listed there still 400 on some
-# plans). gpt-4.1 sits first despite its scheduled retirement (GitHub's
-# supported-models table, 2026-06-01) because it is live-verified working on
-# some plans — the menu is an offer, not a contract; if a pick 400s on your
-# plan, the ping says so plainly — choose another.
+# plans). gpt-4.1 sits first: its scheduled retirement in GitHub's
+# supported-models table (2026-06-01) has passed, but it is empirically
+# still serving chat completions on individual-plan accounts (verified
+# 2026-11). The menu is an offer, not a contract — the ping is the gate; if
+# a pick 400s on your plan, it says so plainly — choose another.
 MODEL_SHORTLISTS: dict[str, tuple[str, ...]] = {
     "openrouter": (
         "anthropic/claude-3.5-haiku",
@@ -475,6 +476,8 @@ def _step_model(
         return current
 
     listed = _fetch_live_models(console, provider)
+    if not listed:
+        listed = None  # empty live list (or soft failure) → curated shortlist
     options = list(MODEL_SHORTLISTS.get(provider.key, ())) if listed is None else listed
     starred = set(MODEL_SHORTLISTS.get(provider.key, ()))
     chosen = _prompt_model_choice(console, options, current, starred)
@@ -492,7 +495,7 @@ def _fetch_live_models(console: Console, provider: Provider) -> list[str] | None
     caller falls back to :data:`MODEL_SHORTLISTS` exactly as before.
     """
     from spc import copilot as copilot_module
-    from spc.userconfig import resolve_copilot_token
+    from spc.userconfig import resolve_api_key, resolve_copilot_token
 
     try:
         if provider.kind == "copilot":
@@ -502,13 +505,21 @@ def _fetch_live_models(console: Console, provider: Provider) -> list[str] | None
             )
         else:
             copilot_token = None
+        # Key resolution mirrors _ping: user config first (the wizard stores
+        # pasted keys there), env var as fallback — env-only lookup sent
+        # unauthenticated requests for every interactively-configured user.
+        api_key = (
+            resolve_api_key(LlmConfig(base_url=provider.base_url, api_key_env=provider.api_key_env))
+            if provider.kind != "copilot"
+            else None
+        )
         return list_chat_models(
             provider.kind if provider.kind != "api_key" else _kind_from_base_url(provider),
             provider.base_url,
-            api_key=os.environ.get(provider.api_key_env) or None,
+            api_key=api_key,
             copilot_token=copilot_token,
         )
-    except (ModelsError, copilot_module.CopilotError) as exc:
+    except Exception as exc:  # noqa: BLE001 — fail-soft seam: never escape to the wizard
         console.print(
             f"[yellow]couldn't fetch model list ({exc}), showing our curated picks[/]"
         )
@@ -523,7 +534,10 @@ def _kind_from_base_url(provider: Provider) -> str:
     """
     for known in PROVIDERS:
         if known.base_url == provider.base_url:
-            return known.kind
+            # known.key — list_chat_models dispatches on the provider key
+            # ("openai", "anthropic", ...); known.kind is "api_key" for all
+            # non-Copilot providers and has no fetcher (silent fallback).
+            return known.key
     return "openai"
 
 
@@ -885,4 +899,6 @@ def _offer_repo_wiring(console: Console, non_interactive: bool) -> None:
     init_command()
 
 
-__fetch_live_models_real__ = _fetch_live_models
+# MUST stay defined AFTER `def _fetch_live_models` — conftest captures the
+# original via this name at import time; defined earlier it would bind None.
+_FETCH_LIVE_MODELS_REAL = _fetch_live_models
