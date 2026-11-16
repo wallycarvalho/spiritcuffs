@@ -183,5 +183,4 @@ uv run pytest        # test suite (LLM calls are mocked; no network)
 uv run ruff check spc tests
 ```
 
-MIT licensed.
-# scratch note
+MIT licensed. Source: https://github.com/wallycarvalho/spiritcuffs

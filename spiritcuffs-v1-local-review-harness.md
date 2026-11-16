@@ -54,7 +54,7 @@ A lightweight local tool that reviews your code **before you push**. Set it up o
 - No learning/calibration loop from the user's own feedback (v2+)
 - No blocking gates (except explicit `strict` opt-in)
 - No config beyond one TOML file
-- **No npm wrapper** (deferred to v1.1)
+- **No npm wrapper** (deferred to v1.1 — *shipped early: included in the v1 release prep, see step 3 below*)
 - **No doc generation** (v1.5)
 - **No agent framework / orchestration library** (see §7)
 
@@ -64,7 +64,7 @@ A lightweight local tool that reviews your code **before you push**. Set it up o
 
 **LLM calls:** plain `httpx` against any **OpenAI-compatible endpoint**. Config: `base_url` + `model` + API key from env var. Covers OpenAI, OpenRouter, Anthropic-compatible endpoints, Ollama, LM Studio, vLLM. No litellm — lighter install, fewer breakage points.
 
-**npm wrapper (`spiritcuffs` on npm):** deferred to v1.1. A thin ~50-line Node bin script that detects `uvx`/`pipx`, prints a one-line install hint if missing, and spawns `uvx spiritcuffs@latest <args>` forwarding exit codes. Ship after the Python CLI is proven.
+**npm wrapper (`spiritcuffs` on npm):** shipped with the v1 release prep (originally deferred). A thin ~50-line Node bin script that detects `uvx`/`pipx`, prints a one-line install hint if missing, and spawns `uvx spiritcuffs@latest <args>` forwarding exit codes.
 
 **Language support:** the review is diff-based, so any language works out of the box. Language-awareness stays cheap and optional: file-extension → language tag for the prompt, plus per-language "check for" hints (e.g., `.ts` → type narrowing, `.py` → mutable defaults). No AST parsing in v1.
 
@@ -101,8 +101,8 @@ spc/
 ## 6. Roadmap
 
 1. **v1 (now):** local harness with deep setup-time learning (git + GitHub PR/review-comment mining → LLM-synthesized profile) — usable in any repo, any language
-2. **v1.1:** npm wrapper for JS/TS devs via npx
-3. **v1.5:** `spc history` gains accept/dismiss marking → real feedback data accumulates; **generate default docs** (AGENTS.md, CONTRIBUTING.md skeleton) when a repo is missing them, using the same LLM plumbing
+2. **v1.1:** npm wrapper improvements; keychain/keyring storage for API keys; `spc history` accept/dismiss marking → real feedback data accumulates
+3. **v1.5:** **generate default docs** (AGENTS.md, CONTRIBUTING.md skeleton) when a repo is missing them, using the same LLM plumbing
 4. **v2:** calibration engine learns per-repo category thresholds from that feedback history
 5. **v3:** shadow-mode PR prediction (the original vision) — by then the data collector is mostly written
 6. **Release prep (before/at v1 public launch):** interactive onboarding wizard (`spc setup`-style: select LLM provider, authenticate, choose model — opencode/claude-code-style CLI), polished README, and public-release prep (PyPI publishing, npm wrapper, docs)
@@ -289,7 +289,7 @@ spc/
 ## 9. Open decisions
 
 - **Default model** — a fast/cheap model for v1 (runs on every push); configurable on day one via `base_url` + `model` in `.spc.toml`. **Resolved:** with httpx, config is just `base_url` + `model`.
-- **npm scope** — **resolved: deferred to v1.1**; wrapper is `spiritcuffs` (unscoped) when it ships.
+- **npm scope** — **resolved: shipped with v1 release prep**; wrapper is `spiritcuffs` (unscoped) at version `0.1.0`, matching the Python package.
 - **Strict default** — **resolved: `strict = false`.** Blocking pushes out of the box is how tools get uninstalled.
 - **Secrets scan default** — **resolved: warn + `block_on_secrets` config option (default false).**
 - **Config/artifact split** — **resolved: `.spc.toml` committed, `.spc/` gitignored.**

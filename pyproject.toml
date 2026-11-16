@@ -30,10 +30,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/spiritcuffs/spiritcuffs"
-Repository = "https://github.com/spiritcuffs/spiritcuffs"
-Issues = "https://github.com/spiritcuffs/spiritcuffs/issues"
-Changelog = "https://github.com/spiritcuffs/spiritcuffs/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/wallycarvalho/spiritcuffs"
+Repository = "https://github.com/wallycarvalho/spiritcuffs"
+Issues = "https://github.com/wallycarvalho/spiritcuffs/issues"
+Changelog = "https://github.com/wallycarvalho/spiritcuffs/blob/main/CHANGELOG.md"
 
 [project.scripts]
 spc = "spc.cli:app"
