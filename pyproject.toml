@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "spiritcuffs"
-version = "0.1.0"
+version = "0.1.1"
 description = "A lightweight local tool that reviews your code with an LLM before every git push."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,9 @@ Changelog = "https://github.com/wallycarvalho/spiritcuffs/blob/main/CHANGELOG.md
 
 [project.scripts]
 spc = "spc.cli:app"
+# Alias so `uvx spiritcuffs` / `pipx run spiritcuffs` work with the bare
+# package name, matching the npx experience (bin name = package name).
+spiritcuffs = "spc.cli:app"
 
 [dependency-groups]
 dev = [

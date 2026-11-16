@@ -41,7 +41,7 @@ def test_wrapper_forwards_args_and_exit_code(
         text=True,
         timeout=30,
     )
-    assert "runner args: spiritcuffs@latest init --flag" in result.stdout
+    assert "runner args: --from spiritcuffs spc init --flag" in result.stdout
     assert result.returncode == 7  # child's exit code forwarded
 
 
@@ -82,5 +82,5 @@ def test_wrapper_falls_back_to_pipx(
         text=True,
         timeout=30,
     )
-    assert "pipx args: run spiritcuffs review" in result.stdout
+    assert "pipx args: run --spec spiritcuffs spc review" in result.stdout
     assert result.returncode == 5
