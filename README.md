@@ -27,10 +27,20 @@ npx spiritcuffs setup
 ```
 
 `spc setup` is a one-time wizard: pick a provider (OpenRouter, OpenAI,
-Anthropic, or a local endpoint), paste your API key (stored in
-`~/.spc/config.toml`, mode 600), pick a model, and it tests the connection.
-Scripted/CI variant: `spc setup --non-interactive --provider openrouter
---api-key-env OPENROUTER_API_KEY --skip-ping`.
+Anthropic, GitHub Copilot, or a local endpoint), authenticate (paste your API
+key — stored in `~/.spc/config.toml`, mode 600 — or log in with your Copilot
+subscription via the GitHub device flow), pick a model, and it tests the
+connection. Scripted/CI variant: `spc setup --non-interactive --provider
+openrouter --api-key-env OPENROUTER_API_KEY --skip-ping`.
+
+**GitHub Copilot** works with any Copilot plan (Free included): choosing it
+runs the official GitHub device-flow login (open a URL, enter a code), checks
+your Copilot entitlement, and stores only the long-lived GitHub OAuth token.
+Each review exchanges it for a short-lived API token that is never written to
+disk. CI: `spc setup -y --provider copilot --copilot-token <github-oauth-token>`
+(or export `COPILOT_GITHUB_TOKEN`). GitHub Enterprise is not supported yet.
+Copilot plan gates model access — the default `gpt-4.1-mini` is broadly
+available; override with `--model`.
 
 Then, inside any git repo:
 
@@ -112,7 +122,9 @@ github_pages_max = 10      # pagination ceiling per endpoint
 Keys resolve in order: repo `.spc.toml` `llm.api_key` → user config
 `~/.spc/config.toml` (written by `spc setup`) → the env var named by
 `api_key_env`. GitHub tokens: user config `github.token` → `GITHUB_TOKEN` →
-`GH_TOKEN` → `gh auth token`.
+`GH_TOKEN` → `gh auth token`. Copilot OAuth tokens: repo `.spc.toml`
+`copilot.github_oauth_token` → user config `copilot.github_oauth_token` →
+`COPILOT_GITHUB_TOKEN`.
 
 Export your key: `export SPC_API_KEY=sk-...` (any OpenAI-compatible provider).
 

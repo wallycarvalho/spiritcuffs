@@ -29,10 +29,13 @@ First public release: a local, LLM-powered second opinion on every `git push`.
   comments stay local in `.spc/evidence.json`. GitHub Enterprise supported
   (`[github] base_url`).
 - `spc setup` — interactive onboarding wizard: provider picker (OpenRouter,
-  OpenAI, Anthropic, local endpoints), hidden API-key entry, model shortlist,
-  optional GitHub token, review preferences, live connection test, and an
-  offer to wire the current repo. Non-interactive mode (`--non-interactive`
-  + flags) for scripted/CI use. Idempotent — re-runs edit existing choices.
+  OpenAI, Anthropic, GitHub Copilot, local endpoints), hidden API-key entry,
+  GitHub Copilot device-flow login (stores only the long-lived OAuth token;
+  the per-run API token is never persisted), model shortlist, optional GitHub
+  token, review preferences, live connection test, and an offer to wire the
+  current repo. Non-interactive mode (`--non-interactive` + flags, incl.
+  `--copilot-token`) for scripted/CI use. Idempotent — re-runs edit existing
+  choices.
 - User-level config `~/.spc/config.toml` (mode 0600) — stores the LLM API key
   and GitHub token outside any repo. Resolution order: repo `.spc.toml`
   `llm.api_key` → user config → env var. Keys are masked in all output and

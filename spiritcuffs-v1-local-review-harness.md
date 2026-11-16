@@ -64,6 +64,8 @@ A lightweight local tool that reviews your code **before you push**. Set it up o
 
 **LLM calls:** plain `httpx` against any **OpenAI-compatible endpoint**. Config: `base_url` + `model` + API key from env var. Covers OpenAI, OpenRouter, Anthropic-compatible endpoints, Ollama, LM Studio, vLLM. No litellm — lighter install, fewer breakage points.
 
+**GitHub Copilot provider:** powered by the official GitHub partnership device flow (as integrated by OpenCode). One-time OAuth Device Flow login (`github.com/login/device/code`, client `Ov23li5Rr1rgjMTpz5am`) → long-lived GitHub OAuth token stored in the user config (mode 0600); soft entitlement check (`copilot_internal/user` — only an explicit chat-disabled answer blocks); per-run exchange (`copilot_internal/v2/token`) for a short-lived (~30 min) API token that is **never persisted**. Chat calls go to `endpoints.api` (fallback `api.githubcopilot.com`) with required headers `Openai-Intent: conversation-edits`, `x-initiator: user`, `X-GitHub-Api-Version: 2022-11-28`. Works with any Copilot plan (Free included); plan gates model access. **GitHub Enterprise not supported yet.**
+
 **npm wrapper (`spiritcuffs` on npm):** shipped with the v1 release prep (originally deferred). A thin ~50-line Node bin script that detects `uvx`/`pipx`, prints a one-line install hint if missing, and spawns `uvx spiritcuffs@latest <args>` forwarding exit codes.
 
 **Language support:** the review is diff-based, so any language works out of the box. Language-awareness stays cheap and optional: file-extension → language tag for the prompt, plus per-language "check for" hints (e.g., `.ts` → type narrowing, `.py` → mutable defaults). No AST parsing in v1.
