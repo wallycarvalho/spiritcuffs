@@ -8,10 +8,13 @@ const { spawn, spawnSync } = require("child_process");
 
 function resolveRunner() {
   // Prefer uvx, then pipx. spawnSync probe with stdio ignore; status 0 = exists.
+  // The package's executable is `spc`, not `spiritcuffs`, so both runners need
+  // the explicit executable: `uvx --from spiritcuffs spc` / `pipx run --spec
+  // spiritcuffs spc`.
   const uvx = spawnSync("uvx", ["--version"], { stdio: "ignore" });
-  if (uvx.status === 0) return { cmd: "uvx", args: ["spiritcuffs@latest"] };
+  if (uvx.status === 0) return { cmd: "uvx", args: ["--from", "spiritcuffs", "spc"] };
   const pipx = spawnSync("pipx", ["--version"], { stdio: "ignore" });
-  if (pipx.status === 0) return { cmd: "pipx", args: ["run", "spiritcuffs"] };
+  if (pipx.status === 0) return { cmd: "pipx", args: ["run", "--spec", "spiritcuffs", "spc"] };
   return null;
 }
 
