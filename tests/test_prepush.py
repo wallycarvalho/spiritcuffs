@@ -23,7 +23,7 @@ from spc.log import history_file
 
 runner = CliRunner()
 
-SECRET_LINE = 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'
+SECRET_LINE = 'AWS_KEY = "AKIA0123456789ABCDEF"\n'
 
 
 def _null_console(monkeypatch) -> None:
@@ -388,7 +388,7 @@ def test_secrets_redacted_before_llm_by_default(git_repo, monkeypatch) -> None:
     result = runner.invoke(cli.app, ["review", "--from-hook"], input=stdin)
     assert result.exit_code == 0, result.output
     prompt = calls["prompts"][0]
-    assert "AKIAIOSFODNN7EXAMPLE" not in prompt  # secret never sent
+    assert "AKIA0123456789ABCDEF" not in prompt  # secret never sent
     assert "[REDACTED:" in prompt  # marker present instead
 
 

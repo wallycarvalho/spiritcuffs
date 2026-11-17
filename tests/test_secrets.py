@@ -10,7 +10,7 @@ index 111..222 100644
 +++ b/config.py
 @@ -1,3 +1,5 @@
  import os
-+AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
++AWS_KEY = "AKIA0123456789ABCDEF"
 +token = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 +password = "super-secret-password-123"
  def main():
@@ -31,7 +31,7 @@ def test_ignores_context_lines_and_existing_secrets() -> None:
         "--- a/a.py\n"
         "+++ b/a.py\n"
         "@@ -1,2 +1,2 @@\n"
-        "-AWS_KEY = 'AKIAIOSFODNN7EXAMPLE'\n"  # removed line — not a new leak
+        "-AWS_KEY = 'AKIA0123456789ABCDEF'\n"  # removed line — not a new leak
         "+AWS_KEY = os.environ['AWS_KEY']\n"  # safe replacement
     )
     assert scan_diff_for_secrets(diff) == []
@@ -47,6 +47,33 @@ def test_ignores_short_generic_values() -> None:
         "+timeout = 30\n"
     )
     assert scan_diff_for_secrets(diff) == []
+
+
+def test_allowlisted_documentation_values_are_ignored() -> None:
+    """The AWS docs example key must not flag — every tutorial repo would otherwise
+    warn forever, and our own fixtures use it (real push caught this)."""
+    diff = (
+        "diff --git a/tests/test_x.py b/tests/test_x.py\n"
+        "--- a/tests/test_x.py\n"
+        "+++ b/tests/test_x.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+SECRET_LINE = 'AWS_KEY = \"AKIAIOSFODNN7EXAMPLE\"'\n"
+        "+secret_key = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"\n"
+    )
+    assert scan_diff_for_secrets(diff) == []
+
+
+def test_allowlist_still_flags_real_aws_keys() -> None:
+    """The allowlist matches exact doc values only — a real-shaped key still flags."""
+    diff = (
+        "diff --git a/prod.py b/prod.py\n"
+        "--- a/prod.py\n"
+        "+++ b/prod.py\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+KEY = \"AKIAIOSFODNN7EXAMPLZ\"\n"  # one char off the docs value
+    )
+    hits = scan_diff_for_secrets(diff)
+    assert [hit.label for hit in hits] == ["AWS access key"]
 
 
 def test_detects_private_key_and_jwt() -> None:

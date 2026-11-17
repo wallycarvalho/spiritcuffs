@@ -5,6 +5,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+# Well-known DOCUMENTATION example values — not real secrets. Flagging them
+# would make every tutorial-following repo flag forever on every push, which
+# erodes trust in the warning itself (GH's secret scanning does the same).
+ALLOWLISTED_VALUES: tuple[str, ...] = (
+    "AKIAIOSFODNN7EXAMPLE",  # AWS docs example access key ID
+    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",  # AWS docs example secret key
+)
+
 # Only added lines count (+ lines), so pre-existing secrets don't re-alarm forever.
 # Each pattern: (label, compiled regex over one line).
 SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -94,6 +102,16 @@ def redact_secrets(diff_text: str, hits: list[SecretHit]) -> str:
     return "\n".join(lines) + ("\n" if diff_text.endswith("\n") else "")
 
 
+def _allowlisted(content: str) -> bool:
+    """True when the line contains only a documentation example value.
+
+    Keeps the well-known AWS docs credentials (used by every tutorial and
+    by our own test fixtures) from triggering a forever-warning on every
+    push — noise erodes trust in the real warnings.
+    """
+    return any(value in content for value in ALLOWLISTED_VALUES)
+
+
 def scan_diff_for_secrets(diff_text: str) -> list[SecretHit]:
     """Scan *added* diff lines for secret-shaped strings; return hits (deduped by label+line)."""
     hits: list[SecretHit] = []
@@ -109,6 +127,8 @@ def scan_diff_for_secrets(diff_text: str) -> list[SecretHit]:
         if not in_hunk or not line.startswith("+") or line.startswith("+++"):
             continue
         content = line[1:]
+        if _allowlisted(content):
+            continue
         for label, pattern in SECRET_PATTERNS:
             if pattern.search(content) and (label, index) not in seen:
                 hits.append(SecretHit(label=label, line_number=index))
