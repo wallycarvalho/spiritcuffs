@@ -1,4 +1,4 @@
-"""Git plumbing: upstream/staged diffs, diff hashing, repo discovery. All subprocess-based."""
+"""Git plumbing: upstream/staged/push diffs, diff hashing, repo discovery. All subprocess-based."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ class DiffResult:
     """The reviewable diff, where it came from, and which files it touches."""
 
     text: str
-    source: str  # "upstream" | "staged"
+    source: str  # "upstream" | "staged" | "push"
     files: list[str]
     dropped_files: list[str] = field(default_factory=list)
 
@@ -49,6 +49,121 @@ def upstream_diff(repo_root: Path) -> str | None:
 def staged_diff(repo_root: Path) -> str | None:
     """``git diff --cached`` — None when git fails (e.g. detached-HEAD edge cases)."""
     return run_git(repo_root, "diff", "--cached")
+
+
+ZERO_SHA = "0" * 40
+
+
+@dataclass(frozen=True)
+class PushRef:
+    """One pre-push stdin line: ``<local_ref> <local_sha> <remote_ref> <remote_sha>``."""
+
+    local_ref: str
+    local_sha: str
+    remote_ref: str
+    remote_sha: str
+
+
+def parse_push_lines(stdin_text: str) -> list[PushRef]:
+    """Parse pre-push hook stdin into :class:`PushRef` entries.
+
+    Malformed lines (wrong field count, non-hex SHAs) are skipped — git
+    controls this input, but fail-soft per line anyway.
+
+    Assumes 40-char SHA-1 hashes (the pre-push stdin contract). SHA-256
+    repos (64-char) have every line skipped → review silently skipped —
+    acceptable fail-soft, not a crash.
+    """
+    refs: list[PushRef] = []
+    for line in stdin_text.splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        shas = (parts[1], parts[3])  # fields 0 and 2 are ref names, not SHAs
+        if not all(
+            len(sha) == 40 and all(c in "0123456789abcdef" for c in sha.lower())
+            for sha in shas
+        ):
+            continue
+        refs.append(PushRef(*parts))
+    return refs
+
+
+def push_diff(repo_root: Path, refs: list[PushRef]) -> DiffResult | None:
+    """The diff of what is actually being pushed, from pre-push stdin refs.
+
+    For each ref: ``git diff remote_sha..local_sha`` (two-dot) is exactly the
+    commits being pushed. Edge cases:
+
+    - local_sha zeros → branch/tag deletion → nothing to review, skipped
+    - remote_sha zeros → new remote ref → diff against the merge-base with
+      the branch's configured remote default branch (unresolvable → skipped)
+    - unresolvable SHAs → that ref is skipped, others still reviewed
+
+    Returns None when nothing reviewable remains (all deletions, empty
+    changes, or no parseable refs). Never raises.
+    """
+    sections: list[str] = []
+    seen_hashes: set[str] = set()
+    for ref in refs:
+        if set(ref.local_sha) == {"0"}:
+            continue  # deletion: nothing to review
+        if set(ref.remote_sha) == {"0"}:
+            base = _new_ref_base(repo_root, ref)
+        else:
+            base = ref.remote_sha
+        if base is None:
+            continue
+        text = run_git(repo_root, "diff", f"{base}..{ref.local_sha}")
+        if text is None or not text.strip():
+            continue
+        digest = diff_hash(text)
+        if digest in seen_hashes:
+            continue  # two refs pushing the same commits — review once
+        seen_hashes.add(digest)
+        sections.append(text)
+    if not sections:
+        return None
+    text = "\n".join(sections)
+    return DiffResult(text=text, source="push", files=changed_files(text))
+
+
+def _new_ref_base(repo_root: Path, ref: PushRef) -> str | None:
+    """Merge-base with the remote default branch for a brand-new remote ref.
+
+    A full-tree diff would review the entire repo; the merge-base with the
+    remote's default branch scopes the diff to this branch's commits. When
+    even that is unresolvable (e.g. orphan branch with no shared history),
+    None makes the ref skipped — a wrong huge diff is worse than no review.
+    """
+    # stdin refs are namespaced (refs/heads/x) — the remote is NOT the ref
+    # prefix. Use the branch's configured push remote, then the repo's
+    # default remote, then common defaults.
+    remote = run_git(repo_root, "config", "--get", f"branch.{_ref_name(ref.local_ref)}.remote")
+    remote = (remote or "").strip() or None
+    candidates = [c for c in (remote, "origin", "upstream") if c]
+    for name in dict.fromkeys(candidates):
+        for spec in (f"{name}/HEAD", f"{name}/main", f"{name}/master"):
+            # --all lists every merge base on criss-cross merges; picking the
+            # first is arbitrary and can miss branch commits in that rare
+            # case — acceptable fail-soft.
+            base = run_git(repo_root, "merge-base", "--all", spec, ref.local_sha)
+            if base and base.strip():
+                return base.strip().splitlines()[0]
+    return None
+
+
+def _ref_name(ref: str) -> str:
+    """refs/heads/main → main; refs/heads/feature/sub → feature/sub.
+
+    The whole remainder after ``refs/heads/`` — branch names may contain
+    slashes, and the last path segment would look up the wrong git config
+    key (``branch.feature/sub.remote`` is the real key).
+    """
+    prefix = "refs/heads/"
+    if ref.startswith(prefix):
+        return ref[len(prefix):]
+    return ref.split("/")[-1]
 
 
 def collect_diff(repo_root: Path) -> DiffResult | None:

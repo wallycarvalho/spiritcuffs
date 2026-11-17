@@ -11,9 +11,10 @@ MARKER_BEGIN = "# >>> spiritcuffs pre-push >>>"
 MARKER_END = "# <<< spiritcuffs pre-push <<<"
 HOOK_BLOCK = f"""{MARKER_BEGIN}
 # SpiritCuffs: LLM review before push. Bypass: git push --no-verify
-# Runs via sh (Git for Windows ships bash for hooks).
+# Runs via sh (Git for Windows ships bash for hooks). --from-hook makes spc
+# read the pre-push stdin lines and review exactly the commits being pushed.
 if command -v spc >/dev/null 2>&1; then
-    spc review
+    spc review --from-hook
 else
     echo "spiritcuffs: 'spc' not on PATH — skipping review (install: pipx install spiritcuffs)" >&2
 fi

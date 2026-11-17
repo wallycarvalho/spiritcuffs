@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from hashlib import sha256
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import typer
 from rich.console import Console
 
 from spc import __version__
+from spc import diff as diff_mod
 from spc import hook as hook_mod
 from spc import log as log_mod
 from spc import review as review_mod
@@ -17,7 +19,7 @@ from spc.conventions import discover_conventions
 from spc.diff import DiffResult, collect_diff, diff_hash, find_repo_root, truncate_diff
 from spc.log import cache_key
 from spc.profile import load_profile, staleness_notice
-from spc.secrets import scan_diff_for_secrets
+from spc.secrets import redact_secrets, scan_diff_for_secrets
 
 app = typer.Typer(
     help="SpiritCuffs — an LLM second opinion on every push.",
@@ -79,34 +81,81 @@ def learn() -> None:
 
 
 @app.command()
-def review() -> None:
-    """Review the pending diff (upstream, or staged fallback) — run by the pre-push hook."""
+def review(
+    from_hook: bool = typer.Option(
+        False,
+        "--from-hook",
+        help="Read pre-push stdin refs and review exactly the commits being pushed.",
+    ),
+) -> None:
+    """Review the pending diff — run by the pre-push hook (or manually).
+
+    Hook mode (--from-hook): parses git's pre-push stdin and reviews the
+    actual push diff. Manual mode: upstream diff, staged fallback — unchanged.
+    """
     repo_root = _require_repo()
     config = load_config(repo_root)
-    raise typer.Exit(execute_review(repo_root, config))
+    stdin_text = None
+    if from_hook:
+        stdin_text = sys.stdin.read() if not sys.stdin.isatty() else ""
+    raise typer.Exit(execute_review(repo_root, config, push_stdin=stdin_text))
 
 
-def execute_review(repo_root: Path, config: SpcConfig) -> int:
+def execute_review(
+    repo_root: Path, config: SpcConfig, push_stdin: str | None = None
+) -> int:
     """The whole review flow, shared by the command and ``init``.
 
-    Returns the process exit code: 0 unless strict + a critical finding.
-    Fail-soft by design: any unexpected error returns 0 (never breaks a push);
-    strict + critical is the ONLY non-zero path.
+    *push_stdin*: pre-push hook stdin content (``--from-hook`` mode). When
+    given, the diff is computed from the pushed refs instead of @{upstream}.
+
+    Returns the process exit code: 0 unless strict + a critical finding
+    (fresh OR cached) or block_on_secrets triggered. Fail-soft by design:
+    any unexpected error returns 0 (never breaks a push); strict + critical
+    and block_on_secrets are the ONLY non-zero paths.
     """
     try:
-        return _execute_review_inner(repo_root, config)
+        return _execute_review_inner(repo_root, config, push_stdin)
     except Exception as exc:  # noqa: BLE001 — the push path must never crash
         console.print(
-            f"[yellow]spiritcuffs:[/] review skipped — unexpected error ({exc}); continuing."
+            f"[yellow]spiritcuffs:[/] review incomplete — unexpected error ({exc}); "
+            "continuing (nothing was concluded)."
         )
         return 0
 
 
-def _execute_review_inner(repo_root: Path, config: SpcConfig) -> int:
+def _execute_review_inner(
+    repo_root: Path, config: SpcConfig, push_stdin: str | None = None
+) -> int:
     """Review pipeline proper; see :func:`execute_review` for the contract."""
-    diff_result = collect_diff(repo_root)
+    if push_stdin is not None:
+        refs = diff_mod.parse_push_lines(push_stdin)
+        diff_result = diff_mod.push_diff(repo_root, refs) if refs else None
+    else:
+        diff_result = collect_diff(repo_root)
     if diff_result is None:
-        return 0
+        return 0  # empty / deletion-only / no-refs push: nothing to review
+    truncated = False
+
+    # Redact secrets BEFORE truncation: redaction must not be what drops files,
+    # and the LLM must never see the detected secret spans.
+    secret_hits = scan_diff_for_secrets(diff_result.text)
+    if secret_hits:
+        labels = ", ".join(sorted({hit.label for hit in secret_hits}))
+        console.print(f"[bold red]⚠ possible secret(s) in diff:[/] {labels}")
+        console.print("[bold red]  do NOT push before removing them.[/]")
+        if config.secrets.block_on_secrets:
+            console.print(
+                "[yellow]spiritcuffs: block_on_secrets=true — push blocked. "
+                "(bypass: git push --no-verify)[/]"
+            )
+            return 1
+        diff_result = DiffResult(
+            text=redact_secrets(diff_result.text, secret_hits),
+            source=diff_result.source,
+            files=diff_result.files,
+            dropped_files=diff_result.dropped_files,
+        )
 
     truncated_text, dropped = truncate_diff(diff_result.text, config.review.max_diff_kb)
     if dropped:
@@ -114,6 +163,11 @@ def _execute_review_inner(repo_root: Path, config: SpcConfig) -> int:
             text=truncated_text, source=diff_result.source,
             files=diff_result.files, dropped_files=dropped,
         )
+        console.print(
+            f"[yellow]spiritcuffs: review incomplete — {len(dropped)} file(s) omitted "
+            "due to size limits.[/]"
+        )
+        truncated = True
 
     notice = staleness_notice(repo_root, config.learn.profile_max_age_days)
     if notice:
@@ -123,6 +177,12 @@ def _execute_review_inner(repo_root: Path, config: SpcConfig) -> int:
     conventions = discover_conventions(repo_root)
     hotspots = _hotspot_paths(repo_root)
     profile_hash = sha256((profile or "").encode("utf-8")).hexdigest()
+    conventions_hash = sha256(
+        "\n".join(
+            f"{item.name}\n{sha256(item.content.encode('utf-8')).hexdigest()}"
+            for item in conventions
+        ).encode("utf-8")
+    ).hexdigest()
 
     digest = cache_key(
         diff_hash(diff_result.text),
@@ -130,10 +190,11 @@ def _execute_review_inner(repo_root: Path, config: SpcConfig) -> int:
         strict=config.review.strict,
         show_nits=config.review.show_nits,
         profile_hash=profile_hash,
+        conventions_hash=conventions_hash,
     )
 
     if config.review.cache_diff_hash:
-        cached_record = log_mod.last_record_for_hash(repo_root, digest)
+        cached_record = log_mod.cache_hit_message(repo_root, digest)
         if cached_record is not None:
             console.print(
                 "[dim]spiritcuffs: diff unchanged since last review — cached findings:[/]"
@@ -150,40 +211,47 @@ def _execute_review_inner(repo_root: Path, config: SpcConfig) -> int:
                 if isinstance(f, dict)
             ]
             _print_findings(cached_findings, console)
-            return 0
-
-    hits = scan_diff_for_secrets(diff_result.text)
-    if hits:
-        labels = ", ".join(sorted({hit.label for hit in hits}))
-        console.print(f"[bold red]⚠ possible secret(s) in diff:[/] {labels}")
-        console.print("[bold red]  do NOT push before removing them.[/]")
-        if config.secrets.block_on_secrets:
-            console.print("[yellow]spiritcuffs: block_on_secrets=true — skipping LLM review.[/]")
+            if config.review.strict and any(
+                f.severity == "critical" for f in cached_findings
+            ):
+                console.print(
+                    "[bold red]strict mode: critical finding — push blocked.[/] "
+                    "(bypass: git push --no-verify)"
+                )
+                return 1
             return 0
 
     output = review_mod.run_review(
         diff_result, profile, conventions, config, console, hotspot_paths=hotspots
     )
+    if truncated and output.ok:
+        output.outcome = "incomplete"
+
+    if not output.ok:
+        # Failed review: the yellow LLM warning was already printed by
+        # run_review. Never a green "no substantive findings" line, nothing
+        # logged, nothing cached — the next push re-reviews for real.
+        return 0
 
     _print_findings(output.findings, console)
 
-    findings_dicts = [
-        {
-            "severity": finding.severity,
-            "file": finding.file,
-            "line": finding.line,
-            "message": finding.message,
-            "suggestion": finding.suggestion,
-        }
-        for finding in output.findings
-    ]
     try:
         log_mod.append_record(
             repo_root,
             diff_hash=digest,
             diff=diff_result,
-            findings=findings_dicts,
+            findings=[
+                {
+                    "severity": finding.severity,
+                    "file": finding.file,
+                    "line": finding.line,
+                    "message": finding.message,
+                    "suggestion": finding.suggestion,
+                }
+                for finding in output.findings
+            ],
             model=output.model,
+            outcome=output.outcome,
         )
     except OSError as exc:
         console.print(f"[yellow]spiritcuffs:[/] could not write history: {exc}")

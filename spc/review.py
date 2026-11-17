@@ -54,7 +54,14 @@ class ReviewOutput:
     dropped_files: list[str] = field(default_factory=list)
     secret_hits: list[str] = field(default_factory=list)
     cached: bool = False
-    model: str = ""
+    model: str = "",
+    # True only when the LLM actually ran and returned parseable output.
+    # False on LLM failure — failed reviews are NEVER logged or cached.
+    ok: bool = True,
+    outcome: str = "passed",  # passed | findings | incomplete | failed
+    # ("skipped" existed in earlier drafts; no code path sets it — the
+    # no-refs/deletion path returns before a ReviewOutput exists. The
+    # cache filter still tolerates the value for legacy JSONL records.)
 
 
 def parse_findings(raw: str) -> list[Finding]:
@@ -259,8 +266,11 @@ def run_review(
         )
     except (llm.LlmError, CopilotError) as exc:
         console.print(f"[yellow]spiritcuffs:[/] LLM review failed ({exc}); continuing.")
+        output.ok = False
+        output.outcome = "failed"
         return output
     output.findings = cap_findings(parse_findings(raw))
+    output.outcome = "findings" if output.findings else "passed"
     return output
 
 

@@ -39,6 +39,7 @@ def append_record(
     findings: list[dict],
     model: str,
     cached: bool = False,
+    outcome: str = "passed",
 ) -> Path:
     """Append one review record; returns the file written."""
     record = {
@@ -49,6 +50,7 @@ def append_record(
         "findings": findings,
         "model": model,
         "cached": cached,
+        "outcome": outcome,
     }
     path = history_file(repo_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,6 +89,23 @@ def last_record_for_hash(repo_path: Path, diff_hash: str) -> dict | None:
     return None
 
 
+def cache_hit_message(repo_path: Path, diff_hash: str) -> dict | None:
+    """The record to serve as a cache hit — only successful reviews qualify.
+
+    Records with ``outcome`` "failed"/"skipped" (LLM did not complete) are
+    never cacheable: treating them as "reviewed, clean" would poison the
+    cache with a non-review. "incomplete" is excluded too — a truncated
+    diff that happened to come back clean is not a clean verdict for the
+    full diff; the next push re-reviews for real.
+    """
+    record = last_record_for_hash(repo_path, diff_hash)
+    if record is None:
+        return None
+    if str(record.get("outcome", "passed")) in ("failed", "skipped", "incomplete"):
+        return None
+    return record
+
+
 def cache_key(
     diff_hash: str,
     *,
@@ -94,14 +113,17 @@ def cache_key(
     strict: bool,
     show_nits: bool,
     profile_hash: str,
+    conventions_hash: str = "",
 ) -> str:
     """Salted cache key: diff plus everything that changes review output.
 
-    A bare diff hash goes stale when the model, rubric toggles, or profile
-    change — the salt keeps cached findings from outliving the settings
-    that produced them.
+    A bare diff hash goes stale when the model, rubric toggles, profile, or
+    convention files change — the salt keeps cached findings from outliving
+    the settings that produced them.
     """
-    salt = json.dumps([model, strict, show_nits, profile_hash], ensure_ascii=False)
+    salt = json.dumps(
+        [model, strict, show_nits, profile_hash, conventions_hash], ensure_ascii=False
+    )
     digest = hashlib.sha256(f"{diff_hash}\n{salt}".encode()).hexdigest()
     return f"{diff_hash[:16]}-{digest[:16]}"
 

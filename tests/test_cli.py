@@ -143,7 +143,9 @@ def test_review_failsoft_on_unexpected_crash(git_repo, monkeypatch) -> None:
     monkeypatch.setattr(cli, "console", reading)
 
     assert cli.execute_review(repo, load_config(repo)) == 0
-    assert "review skipped" in reading.export_text()
+    # Failure must NOT read as success: "review incomplete", never a green pass.
+    assert "review incomplete" in reading.export_text()
+    assert "no substantive findings" not in reading.export_text()
 
 
 def test_gitignore_uses_info_exclude_when_no_gitignore(git_repo, monkeypatch) -> None:

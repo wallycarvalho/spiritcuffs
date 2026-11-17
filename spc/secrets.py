@@ -39,6 +39,61 @@ class SecretHit:
     line_number: int  # 1-based within the diff text
 
 
+_PRIVATE_KEY_BODY_CAP = 40
+
+
+def _redact_line(lines: list[str], index: int) -> None:
+    """Replace one added line's pattern-matched spans with markers (in place)."""
+    line = lines[index]
+    if not line.startswith("+") or line.startswith("+++"):
+        return
+    content = line[1:]
+    for label, pattern in SECRET_PATTERNS:
+        content = pattern.sub(f"[REDACTED:{label}]", content)
+    lines[index] = "+" + content
+
+
+def _redact_private_key_body(lines: list[str], header_index: int) -> None:
+    """Redact every added line after a private-key header until ``-----END``.
+
+    The base64 body matches no single-line pattern but IS the key material,
+    so the whole block is replaced. The cap keeps a missing END marker from
+    swallowing an entire file section.
+    """
+    limit = min(header_index + _PRIVATE_KEY_BODY_CAP, len(lines))
+    # header_index is 1-based → body starts at lines[header_index].
+    for index in range(header_index, limit):
+        line = lines[index]
+        if "-----END" in line and "PRIVATE KEY-----" in line:
+            break
+        if line.startswith("+") and not line.startswith("+++"):
+            lines[index] = "+[REDACTED:private key body]"
+
+
+def redact_secrets(diff_text: str, hits: list[SecretHit]) -> str:
+    """Return *diff_text* with each detected secret span replaced by a marker.
+
+    The LLM must never see the secret itself — only that one existed and
+    what kind. Spans are located by re-running the patterns on the same
+    lines the scan flagged (deterministic: same text → same redaction →
+    same diff hash for caching).
+
+    A private-key hit redacts the whole block: the base64 body lines match
+    no pattern but ARE the key material.
+    """
+    if not hits:
+        return diff_text
+    lines = diff_text.splitlines()
+    flagged = {hit.line_number for hit in hits}
+    for index in sorted(flagged):
+        if 1 <= index <= len(lines):
+            _redact_line(lines, index - 1)
+    for hit in hits:
+        if hit.label == "private key block" and 1 <= hit.line_number <= len(lines):
+            _redact_private_key_body(lines, hit.line_number)
+    return "\n".join(lines) + ("\n" if diff_text.endswith("\n") else "")
+
+
 def scan_diff_for_secrets(diff_text: str) -> list[SecretHit]:
     """Scan *added* diff lines for secret-shaped strings; return hits (deduped by label+line)."""
     hits: list[SecretHit] = []

@@ -185,7 +185,8 @@ def test_review_blocked_on_secrets_skips_llm(git_repo, monkeypatch) -> None:
 
     monkeypatch.setattr(review.llm, "complete", fake_complete)
     config = SpcConfig(secrets=SpcConfig().secrets.__class__(block_on_secrets=True))
-    assert cli.execute_review(repo, config) == 0
+    # block_on_secrets=true now BLOCKS the push (exit 1), not merely skips the LLM.
+    assert cli.execute_review(repo, config) == 1
     assert calls["n"] == 0  # LLM never called — diff stayed local
 
 
