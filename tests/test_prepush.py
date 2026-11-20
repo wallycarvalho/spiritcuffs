@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 
+from conftest import AWS_FIXTURE_KEY
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -23,7 +24,7 @@ from spc.log import history_file
 
 runner = CliRunner()
 
-SECRET_LINE = 'AWS_KEY = "AKIA0123456789ABCDEF"\n'
+SECRET_LINE = 'AWS_KEY = "' + AWS_FIXTURE_KEY + '"\n'
 
 
 def _null_console(monkeypatch) -> None:
@@ -388,7 +389,7 @@ def test_secrets_redacted_before_llm_by_default(git_repo, monkeypatch) -> None:
     result = runner.invoke(cli.app, ["review", "--from-hook"], input=stdin)
     assert result.exit_code == 0, result.output
     prompt = calls["prompts"][0]
-    assert "AKIA0123456789ABCDEF" not in prompt  # secret never sent
+    assert AWS_FIXTURE_KEY not in prompt  # secret never sent
     assert "[REDACTED:" in prompt  # marker present instead
 
 

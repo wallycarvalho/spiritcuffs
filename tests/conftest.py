@@ -10,6 +10,28 @@ import pytest
 
 GitFactory = Callable[[dict[str, str], list[tuple[str, str]]], Path]
 
+# --- Secret fixtures -------------------------------------------------------
+#
+# PRIVACY / CI: these must never appear as literal strings in the repo.
+# GitHub's push protection matches the AWS access-key-id shape and any PEM
+# private-key header, so a literal fixture blocks every push to a protected
+# repo — including ours, which is how this problem was found. Assembling the
+# values at runtime keeps the scanner tests real while leaving nothing in the
+# tree for a scanner (ours or GitHub's) to match.
+#
+# ``_AWS_KEY`` still exercises the real pattern: ``AKIA`` prefix, 16 uppercase
+# alphanumerics, no leading/trailing junk.
+
+_AWS_KEY_BODY = "0123456789" + "ABCDEF"
+AWS_FIXTURE_KEY = "AKIA" + _AWS_KEY_BODY
+PRIVATE_KEY_HEADER = "-----BEGIN " + "RSA PRIVATE KEY" + "-----"
+PRIVATE_KEY_FOOTER = "-----END " + "RSA PRIVATE KEY" + "-----"
+
+
+def private_key_block(body_lines: list[str]) -> str:
+    """A structurally valid PEM block for tests, with no matchable header literal."""
+    return "\n".join([PRIVATE_KEY_HEADER, *body_lines, PRIVATE_KEY_FOOTER])
+
 
 def run_git(repo: Path, *args: str) -> None:
     """Run git in *repo*, raising on failure (fixture setup wants loud errors)."""

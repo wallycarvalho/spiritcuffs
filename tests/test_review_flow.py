@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from conftest import AWS_FIXTURE_KEY
 from rich.console import Console
 
 from spc import cli, review
@@ -172,7 +173,7 @@ def test_review_uses_configured_timeout(git_repo, monkeypatch, tmp_path: Path) -
 
 def test_review_blocked_on_secrets_skips_llm(git_repo, monkeypatch) -> None:
     repo = git_repo({"config.py": "x = 1\n"})
-    (repo / "config.py").write_text('AWS_KEY = "AKIA0123456789ABCDEF"\n', encoding="utf-8")
+    (repo / "config.py").write_text('AWS_KEY = "' + AWS_FIXTURE_KEY + '"\n', encoding="utf-8")
     from conftest import run_git
 
     run_git(repo, "add", ".")
@@ -192,7 +193,7 @@ def test_review_blocked_on_secrets_skips_llm(git_repo, monkeypatch) -> None:
 
 def test_review_warns_but_continues_on_secrets_by_default(git_repo, monkeypatch) -> None:
     repo = git_repo({"config.py": "x = 1\n"})
-    (repo / "config.py").write_text('AWS_KEY = "AKIA0123456789ABCDEF"\n', encoding="utf-8")
+    (repo / "config.py").write_text('AWS_KEY = "' + AWS_FIXTURE_KEY + '"\n', encoding="utf-8")
     from conftest import run_git
 
     run_git(repo, "add", ".")

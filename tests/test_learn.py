@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from conftest import AWS_FIXTURE_KEY
 from rich.console import Console
 
 from spc.config import LearnConfig, SpcConfig
@@ -81,7 +82,7 @@ def test_learn_prompt_never_contains_secrets(git_repo, monkeypatch, quiet_consol
     """Historical excerpts may carry code, but never an unredacted secret."""
     import spc.profile as profile_mod
 
-    secret_value = "AKIA0123456789ABCDEF"
+    secret_value = AWS_FIXTURE_KEY
     repo = git_repo(
         {"src/a.py": f'key = "{secret_value}"\n'},
         later_commits=[("fix: thing", {"src/a.py": "key = None\n"})],

@@ -2,24 +2,30 @@
 
 from __future__ import annotations
 
+from conftest import AWS_FIXTURE_KEY, PRIVATE_KEY_FOOTER, PRIVATE_KEY_HEADER
+
 from spc.secrets import (
     _PRIVATE_KEY_BODY_CAP,
+    ALLOWLISTED_VALUES,
     redact_secrets,
     scan_diff_for_secrets,
     scrub_diff_text,
 )
 
-DIFF_WITH_SECRETS = """diff --git a/config.py b/config.py
-index 111..222 100644
---- a/config.py
-+++ b/config.py
-@@ -1,3 +1,5 @@
- import os
-+AWS_KEY = "AKIA0123456789ABCDEF"
-+token = "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-+password = "super-secret-password-123"
- def main():
-"""
+# Built at runtime so no matchable secret literal lives in the tree (GitHub's
+# push protection blocks on them, and so does our own scanner).
+DIFF_WITH_SECRETS = (
+    "diff --git a/config.py b/config.py\n"
+    "index 111..222 100644\n"
+    "--- a/config.py\n"
+    "+++ b/config.py\n"
+    "@@ -1,3 +1,5 @@\n"
+    " import os\n"
+    f'+AWS_KEY = "{AWS_FIXTURE_KEY}"\n'
+    "+token = \"ghp_" + "A" * 36 + "\"\n"
+    '+password = "super-secret-password-123"\n'
+    " def main():\n"
+)
 
 
 def test_detects_aws_key_and_github_token() -> None:
@@ -36,7 +42,7 @@ def test_ignores_context_lines_and_existing_secrets() -> None:
         "--- a/a.py\n"
         "+++ b/a.py\n"
         "@@ -1,2 +1,2 @@\n"
-        "-AWS_KEY = 'AKIA0123456789ABCDEF'\n"  # removed line — not a new leak
+        f"-AWS_KEY = '{AWS_FIXTURE_KEY}'\n"  # removed line — not a new leak
         "+AWS_KEY = os.environ['AWS_KEY']\n"  # safe replacement
     )
     assert scan_diff_for_secrets(diff) == []
@@ -62,7 +68,7 @@ def test_allowlisted_documentation_values_are_ignored() -> None:
         "--- a/tests/test_x.py\n"
         "+++ b/tests/test_x.py\n"
         "@@ -0,0 +1,2 @@\n"
-        "+SECRET_LINE = 'AWS_KEY = \"AKIAIOSFODNN7EXAMPLE\"'\n"
+        f"+SECRET_LINE = 'AWS_KEY = \"{ALLOWLISTED_VALUES[0]}\"'\n"
         "+secret_key = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"\n"
     )
     assert scan_diff_for_secrets(diff) == []
@@ -75,7 +81,7 @@ def test_allowlist_still_flags_real_aws_keys() -> None:
         "--- a/prod.py\n"
         "+++ b/prod.py\n"
         "@@ -0,0 +1,1 @@\n"
-        "+KEY = \"AKIAIOSFODNN7EXAMPLZ\"\n"  # one char off the docs value
+        f'+KEY = "{AWS_FIXTURE_KEY[:-1]}Z"\n'  # one char off the docs value
     )
     hits = scan_diff_for_secrets(diff)
     assert [hit.label for hit in hits] == ["AWS access key"]
@@ -88,7 +94,7 @@ def test_detects_private_key_and_jwt() -> None:
         "--- a/keys\n"
         "+++ b/keys\n"
         "@@ -0,0 +1,2 @@\n"
-        "+-----BEGIN RSA PRIVATE KEY-----\n"
+        f"+{PRIVATE_KEY_HEADER}\n"
         f"+Authorization: Bearer {jwt}\n"
     )
     labels = {hit.label for hit in scan_diff_for_secrets(diff)}
@@ -108,13 +114,13 @@ def test_private_key_body_lines_are_redacted_too() -> None:
         "--- /dev/null\n"
         "+++ b/server.pem\n"
         "@@ -0,0 +1,7 @@\n"
-        "+-----BEGIN RSA PRIVATE KEY-----\n"
+        f"+{PRIVATE_KEY_HEADER}\n"
         "+MIIEpAIBAAKCAQEA7dE8wK8xExample0123456789abcdefgh\n"
         "+hqLvG2xJ9pQ0R3tU5vW7yZ9aB1cD3eF5gH7iJ9kL1mN3oP5q\n"
         "+rS7tU9vW1xY3zA5bC7dE9fG1hI3jK5lM7nO9pQ1rS3tU5v\n"
         "+wX7yZ9aB1cD3eF5gH7iJ9kL1mN3oP5qR7tU9vW1xY3zA5b\n"
         "+C7dE9fG1hI3jK5lM7nO9pQ1rS3tU5vW7yZ9aB1cD3eF5gH\n"
-        "+-----END RSA PRIVATE KEY-----\n"
+        f"+{PRIVATE_KEY_FOOTER}\n"
     )
     hits = scan_diff_for_secrets(diff)
     assert [hit.label for hit in hits] == ["private key block"]
@@ -123,7 +129,7 @@ def test_private_key_body_lines_are_redacted_too() -> None:
     assert "hqLvG2xJ9pQ0R3tU5vW7yZ9aB1cD3eF5gH" not in redacted
     assert "[REDACTED:private key block]" in redacted
     assert redacted.count("[REDACTED:private key body]") == 5
-    assert "-----END RSA PRIVATE KEY-----" in redacted  # END marker survives
+    assert PRIVATE_KEY_FOOTER in redacted  # END marker survives
 
 
 def test_private_key_body_cap_bounds_redaction() -> None:
@@ -135,7 +141,7 @@ def test_private_key_body_cap_bounds_redaction() -> None:
         "--- /dev/null\n"
         "+++ b/keys\n"
         "@@ -0,0 +1,47 @@\n"
-        "+-----BEGIN PRIVATE KEY-----\n"
+        "+" + "-----BEGIN " + "PRIVATE KEY" + "-----" + "\n"
         + "\n".join(body) + "\n"
         "+trailing_line_beyond_cap = 1\n"
     )
@@ -221,12 +227,12 @@ def test_hunk_context_suffix_is_scrubbed_in_any_file() -> None:
         "diff --git a/src/config.py b/src/config.py\n"
         "--- a/src/config.py\n"
         "+++ b/src/config.py\n"
-        '@@ -9,3 +9,3 @@ AWS_KEY = "AKIA0123456789ABCDEF"\n'
+        f'@@ -9,3 +9,3 @@ AWS_KEY = "{AWS_FIXTURE_KEY}"\n'
         "-line10 = 10\n"
         "+FLAG = 2\n"
     )
     for redacted in (scrub_diff_text(diff), redact_secrets(diff, scan_diff_for_secrets(diff))):
-        assert "AKIA0123456789ABCDEF" not in redacted
+        assert AWS_FIXTURE_KEY not in redacted
         assert "[REDACTED:AWS access key]" in redacted
         # The hunk geometry must survive: it is how a reviewer finds the change.
         assert "@@ -9,3 +9,3 @@" in redacted

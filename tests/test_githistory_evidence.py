@@ -11,7 +11,12 @@ import subprocess
 from io import StringIO
 from pathlib import Path
 
-from conftest import run_git, run_git_capture
+from conftest import (
+    AWS_FIXTURE_KEY,
+    private_key_block,
+    run_git,
+    run_git_capture,
+)
 from rich.console import Console
 
 from spc.githistory import (
@@ -274,7 +279,7 @@ def test_excerpts_disabled_fetches_no_code(git_repo) -> None:
 
 def test_excerpt_redacts_secret_removed_by_a_fix(git_repo) -> None:
     """A historical fix often shows a secret being removed — the ``-`` side must be clean too."""
-    secret = "AKIA0123456789ABCDEF"
+    secret = AWS_FIXTURE_KEY
     repo = git_repo({"src/config.py": f'key = "{secret}"\n'})
     (repo / "src" / "config.py").write_text('key = "safe"\n', encoding="utf-8")
     run_git(repo, "add", "src/config.py")
@@ -290,7 +295,7 @@ def test_excerpt_redacts_secret_removed_by_a_fix(git_repo) -> None:
 def test_excerpt_redacts_private_key_block_body(git_repo) -> None:
     body = "\n".join(f"MIIEpAIBAAKCAQEA{i}" for i in range(4))
     repo = git_repo(
-        {"src/key.pem": f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\n"}
+        {"src/key.pem": private_key_block([body])}
     )
     (repo / "src/key.pem").write_text("placeholder\n", encoding="utf-8")
     run_git(repo, "add", "src/key.pem")
@@ -310,9 +315,9 @@ def test_excerpt_redacts_rotated_private_key_whose_header_is_context(git_repo) -
     would be gone, body redaction would never fire, and the new key material
     would land in evidence.json and the synthesis prompt.
     """
-    repo = git_repo({"deploy/key.pem": "-----BEGIN RSA PRIVATE KEY-----\nOLDKEYBODYLINE1\n-----END RSA PRIVATE KEY-----\n"})
+    repo = git_repo({"deploy/key.pem": private_key_block(["OLDKEYBODYLINE1"])})
     (repo / "deploy" / "key.pem").write_text(
-        "-----BEGIN RSA PRIVATE KEY-----\nNEWKEYBODYLINE1\n-----END RSA PRIVATE KEY-----\n",
+        private_key_block(["NEWKEYBODYLINE1"]),
         encoding="utf-8",
     )
     run_git(repo, "add", "deploy/key.pem")
@@ -334,12 +339,11 @@ def test_excerpt_redacts_key_material_when_the_header_is_out_of_view(git_repo) -
     secret pattern. The body must still be recognised as key material.
     """
     body = [f"BODYLINENUMBER{index:02d}AbCdEfGhIjKlMnOpQrStUvWxYz0123456789+/" for index in range(30)]
-    header = "-----BEGIN RSA PRIVATE KEY-----"
-    repo_key = git_repo({"deploy/key.pem": "\n".join([header, *body, "-----END RSA PRIVATE KEY-----", ""])})
+    repo_key = git_repo({"deploy/key.pem": private_key_block(body)})
     rotated = list(body)
     rotated[20] = "U0VDUkVUTUFURVJJQUxMSU5FMjBaWlpaWlpaWlpaWlpaWlpaWlpa"
     (repo_key / "deploy" / "key.pem").write_text(
-        "\n".join([header, *rotated, "-----END RSA PRIVATE KEY-----", ""]), encoding="utf-8"
+        private_key_block(rotated), encoding="utf-8"
     )
     run_git(repo_key, "add", "deploy/key.pem")
     run_git(repo_key, "commit", "-m", "fix: rotate the deploy key")
