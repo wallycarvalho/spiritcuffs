@@ -216,10 +216,17 @@ def _log_subjects(range_spec: str) -> list[str]:
 
 
 def next_steps(new_version: str) -> list[str]:
+    """Commands to run after the bump.
+
+    ``uv build`` must start from an empty ``dist/``: ``uv publish`` with no
+    arguments uploads *every* artifact it finds there, so a leftover wheel from
+    a previous release is offered to PyPI first, is rejected as a duplicate
+    filename, and aborts the upload before the new version is reached.
+    """
     return [
         f'git add -A && git commit -m "chore(release): {new_version}" '
         f'&& git tag v{new_version} && git push --follow-tags',
-        "uv build && uv publish",
+        "rm -rf dist && uv build && uv publish",
     ]
 
 

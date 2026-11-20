@@ -242,7 +242,7 @@ def test_next_steps_match_brief() -> None:
     assert commands[0] == (
         'git add -A && git commit -m "chore(release): 0.1.2" && git tag v0.1.2 && git push --follow-tags'
     )
-    assert commands[1] == "uv build && uv publish"
+    assert commands[1] == "rm -rf dist && uv build && uv publish"
 
 
 def test_main_dry_run_touches_nothing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
