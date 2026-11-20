@@ -7,10 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-11-20
 
+### Added
+
+- **Structured historical evidence.** `spc learn` now mines per-commit records
+  (SHA, dates, subject, files with change types, line counts, ticket
+  references) instead of file-frequency counters alone, and detects four kinds
+  of relationship between commits: reverts, fixes that follow an earlier change,
+  fixes that shipped without tests, and files that keep changing together.
+  Observed facts and hypotheses are marked as such in the profile. See
+  [docs/git-evidence.md](docs/git-evidence.md).
+- **Bounded historical code excerpts.** Relationship commits contribute up to 12
+  changed lines each, redacted on both sides, so the profile can describe the
+  shape of past mistakes instead of only their subjects. Opt out with
+  `[learn] send_code_excerpts = false`.
+- **Profile leak filter.** Synthesized profiles are scanned for text that
+  reproduces historical code; matching lines are dropped before the profile is
+  written.
+- `docs/example-evidence.json` — a real `.spc/evidence.json` payload showing the
+  emitted shape.
+
 ### Changed
 
-- build secret fixtures at runtime so no matchable literal is committed
-- Enhance tests for learning and secrets management
+- Evidence schema is now versioned (`schema: 2`). Existing `evidence.json` files
+  load as statistics-only; nothing needs re-mining.
+- `spc learn` reports the relationship count it found alongside hotspots.
+- Test fixtures build secret-shaped values at runtime, so the repository no
+  longer contains strings that trip secret scanners (ours or GitHub's push
+  protection).
+
+### Fixed
+
+- Secrets in a diff hunk header's context suffix are now redacted on both the
+  push path and the excerpt path, in every file — not only in key-like paths.
+- Base64-wrapped private keys (the `kubectl create secret tls` shape) are
+  redacted; previously the whole-line match missed them.
+- The private-key body redaction cap now covers a real 8192-bit key (was 40
+  lines, less than half a 4096-bit key).
+- A non-UTF-8 commit message no longer discards the whole mining window.
+- Excerpts are byte-capped per commit; one huge minified file can no longer
+  consume the prompt budget and hide every other excerpt.
+- `files_total` survives a save/load round trip.
+- `scripts/release.py` printed a publish command that re-uploaded stale
+  artifacts; it now clears `dist/` first.
 
 ## [0.2.0] - 2026-11-17
 
