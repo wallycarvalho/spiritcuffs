@@ -1,7 +1,8 @@
 """Profile: build/refresh via LLM synthesis, staleness check, load for the review prompt.
 
-Step-1 note: ``build_profile`` accepts ``extra_evidence_md`` — reserved for the
-step-2 GitHub PR/comment evidence section. Git-only runs pass nothing.
+``build_profile`` synthesizes from two evidence sources in one call: the mined
+git evidence and an optional pre-rendered markdown section carrying GitHub
+PR/comment themes (``extra_evidence_md``).
 """
 
 from __future__ import annotations
@@ -12,14 +13,21 @@ from pathlib import Path
 
 from spc import llm
 from spc.config import SpcConfig
-from spc.githistory import GitEvidence
+from spc.githistory import GIT_EVIDENCE_SCHEMA, GitEvidence, evidence_to_block
 from spc.githubhistory import GithubEvidence
 
 ARTIFACTS_DIRNAME = ".spc"
 PROFILE_FILENAME = "profile.md"
 EVIDENCE_FILENAME = "evidence.json"
 
-MAX_EVIDENCE_CHARS_FOR_PROMPT = 12000  # cap when rendering extra evidence into prompts
+# Prompt budgets. History mining now produces far more raw material than the
+# synthesis call should receive: an unbounded excerpts block pushes the peer
+# review section out of the model's attention, so both sections are capped here.
+MAX_EVENTS_CHARS = 5000
+MAX_EXCERPT_PROMPT_CHARS = 8000
+# One excerpt may claim at most half the section: an oversized block must not
+# crowd out every other, and truncating it keeps the section informative.
+MAX_EXCERPT_BLOCK_CHARS = MAX_EXCERPT_PROMPT_CHARS // 2
 
 
 def artifacts_dir(repo_root: Path) -> Path:
@@ -41,26 +49,18 @@ def save_evidence(repo_root: Path, evidence: GitEvidence) -> None:
     """Persist raw git evidence to ``.spc/evidence.json`` (dataclass → JSON).
 
     Schema 2 keeps per-source blocks (``git`` / ``github``) so step-2 mining
-    merges alongside step-1 stats. Existing github blocks are preserved.
+    merges alongside step-1 stats. Existing github blocks are preserved. The
+    git block itself is versioned (see ``githistory.GIT_EVIDENCE_SCHEMA``).
     """
     directory = artifacts_dir(repo_root)
     directory.mkdir(parents=True, exist_ok=True)
-    git_block = {
-        "commits_scanned": evidence.commits_scanned,
-        "hotspots": evidence.hotspots,
-        "bug_classes": evidence.bug_classes,
-        "test_dirs": evidence.test_dirs,
-        "test_co_change_ratio": evidence.test_co_change_ratio,
-        "language_proportions": evidence.language_proportions,
-        "total_files_tracked": evidence.total_files_tracked,
-    }
     payload = _load_raw_payload(repo_root) or {"schema": 2, "sources": {}}
     sources = payload.setdefault("sources", {})
     sources["git"] = {
-        "schema": 1,
+        "schema": GIT_EVIDENCE_SCHEMA,
         "source": "git",
         "mined_at": time.time(),
-        "evidence": git_block,
+        "evidence": evidence_to_block(evidence),
     }
     evidence_path(repo_root).write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -152,10 +152,10 @@ def build_profile(
     """One LLM call: structured evidence → human-readable ``profile.md`` narrative.
 
     *extra_evidence_md* is an optional pre-rendered markdown section for
-    additional evidence sources (step 2 will pass GitHub PR/comment themes
-    here). Empty for git-only runs. Raises :class:`spc.llm.LlmError` (or
-    :class:`spc.copilot.CopilotError`) on failure — the caller decides
-    fail-soft behavior.
+    additional evidence sources — ``spc learn`` passes the synthesized GitHub
+    PR/comment themes here. Empty for git-only runs. Raises
+    :class:`spc.llm.LlmError` (or :class:`spc.copilot.CopilotError`) on failure
+    — the caller decides fail-soft behavior.
     """
     from spc.provider import resolve_provider_params
 
@@ -190,6 +190,17 @@ _SYNTHESIS_SYSTEM = (
     "from reading the code.\n"
     "4. **What to double-check** — concrete, repo-specific checks (e.g. \"when "
     "touching src/db/, verify migration parity\"), not generic advice.\n"
+    "A \"Historical events\" section may list past fix/revert relationships. Each "
+    "line is marked [observed] (git data asserts the link) or [hypothesis] (the "
+    "commits merely touch the same files within a time window). Use [observed] "
+    "lines as fact and [hypothesis] lines ONLY to suggest what to watch for — "
+    "never claim a hypothesis shows causation. A commit subject containing "
+    "\"fix\" is a keyword, not proof of a root cause. When the same failure "
+    "recurs in two or more relationship entries, say so as a pattern; for a "
+    "single entry, describe it as an incident, not a rule.\n"
+    "Historical code excerpts may be provided to show the shape of past "
+    "failures. Never quote, paraphrase, or restate that code — extract only the "
+    "failure mode in plain language.\n"
     "Do NOT include statistics. Do NOT state language composition. Do NOT give "
     "advice that would be equally true of any repository (e.g. \"ensure tests "
     "accompany changes\", \"keep documentation up to date\", \"watch for "
@@ -198,11 +209,16 @@ _SYNTHESIS_SYSTEM = (
 
 
 def _render_synthesis_prompt(evidence: GitEvidence, extra_evidence_md: str) -> str:
-    """Render the git-evidence JSON (+ optional extra section) for the synthesis call.
+    """Render the git-evidence JSON (+ optional extra sections) for the synthesis call.
 
     Language proportions and test co-change stats are deliberately omitted —
     they invite the model to restate numbers (the exact generic padding the
     profile must not contain). They remain in evidence.json for the curious.
+
+    Peer-review evidence comes before the git-history sections: it is the
+    headline of the profile, and a long excerpts block placed ahead of it
+    competes with it for the model's attention, pulling the synthesis away
+    from what reviewers actually said.
     """
     evidence_json = json.dumps(
         {
@@ -220,8 +236,99 @@ def _render_synthesis_prompt(evidence: GitEvidence, extra_evidence_md: str) -> s
         "```",
     ]
     if extra_evidence_md.strip():
-        parts.extend(["## Additional evidence", extra_evidence_md])
+        parts.extend(["## Peer review evidence", extra_evidence_md])
+    events = _render_relationship_section(evidence)
+    if events:
+        parts.extend(["## Historical events", events])
+    excerpts = _render_excerpt_section(evidence)
+    if excerpts:
+        parts.extend(
+            [
+                "## Historical code excerpts",
+                "These are diffs from past fix/revert commits. They show the SHAPE "
+                "of previous failures. Never quote this code in the profile.",
+                excerpts,
+            ]
+        )
     return "\n".join(parts)
+
+
+def _render_relationship_section(evidence: GitEvidence) -> str:
+    """Compact, one-line-per-relationship listing — metadata only, no code.
+
+    Each line carries the epistemic marker: ``observed`` relationships are
+    stated by git data, ``hypothesis`` ones only co-locate commits in time and
+    files, so the model must not phrase them as causes.
+    """
+    if not evidence.relationships:
+        return ""
+    subjects = {commit.sha: commit.subject for commit in evidence.commits}
+    lines: list[str] = []
+    for relationship in evidence.relationships:
+        marker = "observed" if relationship.observed else "hypothesis"
+        commits = ", ".join(
+            f"{sha[:8]} {_shorten(subjects.get(sha, ''))}"
+            for sha in relationship.commits[:3]
+        )
+        files = ", ".join(relationship.files[:4])
+        line = f"- [{marker}] {relationship.kind}: {relationship.note}"
+        detail = " — ".join(part for part in (commits, files) if part)
+        if detail:
+            line += f" ({detail})"
+        lines.append(line)
+    return _cap_lines(lines, MAX_EVENTS_CHARS)
+
+
+def _render_excerpt_section(evidence: GitEvidence) -> str:
+    """Bounded, redacted snippets for commits that already carry an excerpt.
+
+    One block may claim at most half the section's budget, so an oversized
+    excerpt cannot starve every later one, and the loop stops cleanly when the
+    budget runs out rather than on the first block that does not fit.
+    """
+    with_excerpt = [commit for commit in evidence.commits if commit.excerpt]
+    if not with_excerpt:
+        return ""
+    blocks: list[str] = []
+    used = 0
+    for commit in with_excerpt:
+        header = f"### {commit.sha[:8]} {_shorten(commit.subject)}"
+        block = f"{header}\n```diff\n{commit.excerpt}\n```"
+        remaining = MAX_EXCERPT_PROMPT_CHARS - used
+        if remaining < len(header) + 32:
+            break
+        allowance = min(remaining, MAX_EXCERPT_BLOCK_CHARS)
+        if len(block) > allowance:
+            block = _cap_excerpt_block(block, allowance)
+        blocks.append(block)
+        used += len(block)
+    return "\n\n".join(blocks)
+
+
+def _cap_excerpt_block(block: str, max_chars: int) -> str:
+    """Truncate one fenced excerpt block, closing its fence and marking the cut."""
+    if len(block) <= max_chars:
+        return block
+    return block[: max_chars - 16].rstrip() + "\n…(truncated)\n```"
+
+
+def _cap_lines(lines: list[str], max_chars: int) -> str:
+    """Join lines up to *max_chars*, noting any truncation."""
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > max_chars:
+            kept.append("…(truncated)")
+            break
+        kept.append(line)
+        used += len(line) + 1
+    return "\n".join(kept)
+
+
+def _shorten(text: str, limit: int = 64) -> str:
+    """Collapse whitespace and trim long subjects for one-line rendering."""
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
 
 
 def profile_age_days(repo_root: Path) -> float | None:

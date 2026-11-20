@@ -22,13 +22,13 @@ from spc.githubhistory import (
 )
 from spc.profile import (
     build_profile,
-    load_evidence,
     load_github_evidence,
     profile_path,
     save_evidence,
     save_github_evidence,
     save_profile,
 )
+from spc.secrets import is_change_line
 
 
 def run_learn(repo_root: Path, config: SpcConfig, console: Console) -> bool:
@@ -39,7 +39,11 @@ def run_learn(repo_root: Path, config: SpcConfig, console: Console) -> bool:
     warning, returns False — NO fallback profile; user re-runs ``spc learn``.
     """
     console.print("[bold]spiritcuffs:[/] mining local git history…")
-    evidence = mine_git_history(repo_root, config.learn.learn_max_commits)
+    evidence = mine_git_history(
+        repo_root,
+        config.learn.learn_max_commits,
+        collect_excerpts=config.learn.send_code_excerpts,
+    )
     if evidence is None:
         console.print(
             "[yellow]spiritcuffs:[/] no git history available — skipping learning."
@@ -50,7 +54,8 @@ def run_learn(repo_root: Path, config: SpcConfig, console: Console) -> bool:
     console.print(
         f"  mined {evidence.commits_scanned} commits · "
         f"{len(evidence.hotspots)} hotspots · "
-        f"{len(evidence.bug_classes)} bug classes"
+        f"{len(evidence.bug_classes)} bug classes · "
+        f"{len(evidence.relationships)} relationships"
     )
 
     extra_evidence_md = _mine_github_source(repo_root, config, console)
@@ -67,6 +72,7 @@ def run_learn(repo_root: Path, config: SpcConfig, console: Console) -> bool:
         )
         return False
 
+    profile_md = _scrub_excerpt_leaks(profile_md, evidence, console)
     save_profile(repo_root, profile_md)
     console.print(f"[green]spiritcuffs:[/] profile written to {profile_path(repo_root)}")
     return True
@@ -170,6 +176,57 @@ def _scrub_theme_section(
     return result
 
 
+def _scrub_excerpt_leaks(
+    profile_md: str, evidence: GitEvidence, console: Console
+) -> str:
+    """Drop profile lines that reproduce historical code.
+
+    PRIVACY: the synthesis prompt forbids quoting excerpts, but the output is
+    still checked — this profile is injected into every review prompt, so a
+    quoted snippet would travel further than the one-off learn call. Any line
+    containing a long run of an excerpt's code is dropped.
+    """
+    fingerprints = _excerpt_fingerprints(evidence)
+    if not fingerprints:
+        return profile_md
+    kept: list[str] = []
+    dropped = 0
+    for line in profile_md.splitlines():
+        normalized = " ".join(line.split())
+        if any(fingerprint in normalized for fingerprint in fingerprints):
+            dropped += 1
+            continue
+        kept.append(line)
+    if dropped:
+        console.print(
+            "[yellow]spiritcuffs:[/] dropped "
+            f"{dropped} profile line(s) that reproduced historical code — "
+            "privacy filter applied."
+        )
+    return "\n".join(kept) + ("\n" if profile_md.endswith("\n") else "")
+
+
+def _excerpt_fingerprints(evidence: GitEvidence) -> list[str]:
+    """Long, code-shaped runs from the excerpts — too short to be a real quote otherwise.
+
+    Every excerpt line is covered, not a sample: the filter's whole job is to
+    protect the profile, so a quote from the 20th excerpt must be caught as
+    surely as one from the first.
+    """
+    fingerprints: dict[str, None] = {}
+    for commit in evidence.commits:
+        for line in commit.excerpt.splitlines():
+            if not is_change_line(line):
+                continue
+            content = " ".join(line[1:].split())
+            # Skip markers and trivial one-liners: `}` or `+[REDACTED:…]`
+            # would match half the profile by accident.
+            if len(content) < MIN_LEAK_FINGERPRINT_CHARS or content.startswith("[REDACTED:"):
+                continue
+            fingerprints[content] = None
+    return list(fingerprints)
+
+
 def _skip_reason(repo_root: Path, config: SpcConfig) -> str:
     """One-line, accurate reason why GitHub mining was skipped this run."""
     previous = load_github_evidence(repo_root)
@@ -209,22 +266,3 @@ def _cached_github_section(repo_root: Path) -> str:
     return "\n".join(lines)
 
 
-def load_cached_evidence(repo_root: Path) -> GitEvidence | None:
-    """Rehydrate git evidence from ``.spc/evidence.json`` (for future re-summarization)."""
-    data = load_evidence(repo_root)
-    if data is None:
-        return None
-    try:
-        return GitEvidence(
-            commits_scanned=int(data.get("commits_scanned", 0)),
-            hotspots=[(str(p), int(n)) for p, n in data.get("hotspots", [])],
-            bug_classes=list(data.get("bug_classes", [])),
-            test_dirs=[str(d) for d in data.get("test_dirs", [])],
-            test_co_change_ratio=float(data.get("test_co_change_ratio", 0.0)),
-            language_proportions={
-                str(k): float(v) for k, v in data.get("language_proportions", {}).items()
-            },
-            total_files_tracked=int(data.get("total_files_tracked", 0)),
-        )
-    except (TypeError, ValueError):
-        return None

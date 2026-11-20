@@ -1,0 +1,226 @@
+{
+  "schema": 2,
+  "sources": {
+    "git": {
+      "schema": 2,
+      "source": "git",
+      "mined_at": 1737000000.0,
+      "evidence": {
+        "commits_scanned": 5,
+        "hotspots": [
+          [
+            "src/",
+            8
+          ],
+          [
+            "src/billing/format.py",
+            3
+          ],
+          [
+            "src/billing/invoice.py",
+            3
+          ],
+          [
+            "src/billing/cache.py",
+            2
+          ]
+        ],
+        "bug_classes": [
+          {
+            "keyword": "fix",
+            "count": 1,
+            "top_files": [
+              "src/billing/cache.py",
+              "src/billing/format.py",
+              "src/billing/invoice.py"
+            ]
+          },
+          {
+            "keyword": "revert",
+            "count": 1,
+            "top_files": [
+              "src/billing/cache.py",
+              "src/billing/format.py",
+              "src/billing/invoice.py"
+            ]
+          }
+        ],
+        "test_dirs": [],
+        "test_co_change_ratio": 0.0,
+        "language_proportions": {
+          "python": 100.0
+        },
+        "total_files_tracked": 2,
+        "excerpts_enabled": true,
+        "commits": [
+          {
+            "sha": "a4b5dd26c3ae046ae184e1a860f2643c8f75ff3c",
+            "subject": "Revert \"feat: cache invoice totals\"",
+            "author_timestamp": 1795091105,
+            "committer_timestamp": 1795091105,
+            "files": [
+              {
+                "path": "src/billing/cache.py",
+                "change_type": "deleted",
+                "added": 0,
+                "deleted": 1,
+                "old_path": null
+              }
+            ],
+            "files_total": 1,
+            "excerpt": "diff --git a/src/billing/cache.py b/src/billing/cache.py\n@@ -1 +0,0 @@\n-CACHE = {}",
+            "references": [
+              "1c0e86bbe1d7b7d495ba2cbec7d053d8b3cfc284"
+            ]
+          },
+          {
+            "sha": "1c0e86bbe1d7b7d495ba2cbec7d053d8b3cfc284",
+            "subject": "feat: cache invoice totals",
+            "author_timestamp": 1795091105,
+            "committer_timestamp": 1795091105,
+            "files": [
+              {
+                "path": "src/billing/cache.py",
+                "change_type": "added",
+                "added": 1,
+                "deleted": 0,
+                "old_path": null
+              }
+            ],
+            "files_total": 1,
+            "excerpt": "diff --git a/src/billing/cache.py b/src/billing/cache.py\n@@ -0,0 +1 @@\n+CACHE = {}",
+            "references": []
+          },
+          {
+            "sha": "d9c27149bb2323873960c1d89a0c6c9982c89a92",
+            "subject": "fix: rounding on invoice totals",
+            "author_timestamp": 1795091105,
+            "committer_timestamp": 1795091105,
+            "files": [
+              {
+                "path": "src/billing/format.py",
+                "change_type": "modified",
+                "added": 1,
+                "deleted": 1,
+                "old_path": null
+              },
+              {
+                "path": "src/billing/invoice.py",
+                "change_type": "modified",
+                "added": 1,
+                "deleted": 1,
+                "old_path": null
+              }
+            ],
+            "files_total": 2,
+            "excerpt": "diff --git a/src/billing/format.py b/src/billing/format.py\n@@ -1,2 +1,2 @@\n-    return f'{float(value):.2f}'\n+    return f'{round(float(value), 2):.2f}'\ndiff --git a/src/billing/invoice.py b/src/billing/invoice.py\n@@ -1,2 +1,2 @@\n-    return sum(float(row) for row in rows)\n+    return round(sum(float(row) for row in rows), 2)",
+            "references": []
+          },
+          {
+            "sha": "e9c57d16cc3c8e094a20f1983e7646514afbe39c",
+            "subject": "feat: accept numeric strings in invoice rows",
+            "author_timestamp": 1795091105,
+            "committer_timestamp": 1795091105,
+            "files": [
+              {
+                "path": "src/billing/format.py",
+                "change_type": "modified",
+                "added": 1,
+                "deleted": 1,
+                "old_path": null
+              },
+              {
+                "path": "src/billing/invoice.py",
+                "change_type": "modified",
+                "added": 1,
+                "deleted": 1,
+                "old_path": null
+              }
+            ],
+            "files_total": 2,
+            "excerpt": "diff --git a/src/billing/format.py b/src/billing/format.py\n@@ -1,2 +1,2 @@\n-    return f'{value:.2f}'\n+    return f'{float(value):.2f}'\ndiff --git a/src/billing/invoice.py b/src/billing/invoice.py\n@@ -1,2 +1,2 @@\n-    return sum(rows)\n+    return sum(float(row) for row in rows)",
+            "references": []
+          },
+          {
+            "sha": "3528770761fb0245cf6be13976f0fbe24ce6189e",
+            "subject": "feat: batch invoice totals",
+            "author_timestamp": 1795091104,
+            "committer_timestamp": 1795091104,
+            "files": [
+              {
+                "path": "src/billing/format.py",
+                "change_type": "added",
+                "added": 2,
+                "deleted": 0,
+                "old_path": null
+              },
+              {
+                "path": "src/billing/invoice.py",
+                "change_type": "added",
+                "added": 2,
+                "deleted": 0,
+                "old_path": null
+              }
+            ],
+            "files_total": 2,
+            "excerpt": "diff --git a/src/billing/format.py b/src/billing/format.py\n@@ -0,0 +1,2 @@\n+def money(value):\n+    return f'{value:.2f}'\ndiff --git a/src/billing/invoice.py b/src/billing/invoice.py\n@@ -0,0 +1,2 @@\n+def total(rows):\n+    return sum(rows)",
+            "references": []
+          }
+        ],
+        "relationships": [
+          {
+            "kind": "revert",
+            "observed": true,
+            "commits": [
+              "a4b5dd26c3ae046ae184e1a860f2643c8f75ff3c",
+              "1c0e86bbe1d7b7d495ba2cbec7d053d8b3cfc284"
+            ],
+            "files": [
+              "src/billing/cache.py"
+            ],
+            "note": "revert of \"feat: cache invoice totals\""
+          },
+          {
+            "kind": "fix_after_change",
+            "observed": false,
+            "commits": [
+              "d9c27149bb2323873960c1d89a0c6c9982c89a92",
+              "e9c57d16cc3c8e094a20f1983e7646514afbe39c"
+            ],
+            "files": [
+              "src/billing/format.py",
+              "src/billing/invoice.py"
+            ],
+            "note": "fix \"fix: rounding on invoice totals\" follows \"feat: accept numeric strings in invoice rows\" touching src/billing/format.py, src/billing/invoice.py"
+          },
+          {
+            "kind": "fix_without_test",
+            "observed": true,
+            "commits": [
+              "d9c27149bb2323873960c1d89a0c6c9982c89a92"
+            ],
+            "files": [
+              "src/billing/format.py",
+              "src/billing/invoice.py"
+            ],
+            "note": "fix \"fix: rounding on invoice totals\" changed no test file (src/billing/format.py, src/billing/invoice.py)"
+          },
+          {
+            "kind": "co_change",
+            "observed": true,
+            "commits": [
+              "d9c27149bb2323873960c1d89a0c6c9982c89a92",
+              "e9c57d16cc3c8e094a20f1983e7646514afbe39c",
+              "3528770761fb0245cf6be13976f0fbe24ce6189e"
+            ],
+            "files": [
+              "src/billing/format.py",
+              "src/billing/invoice.py"
+            ],
+            "note": "changed together in 3 commits"
+          }
+        ]
+      }
+    }
+  }
+}

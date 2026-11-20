@@ -66,6 +66,12 @@ class LearnConfig:
 
     learn_max_commits: int = 2000
     profile_max_age_days: int = 30
+    # Mine bounded, secret-redacted diff excerpts from relationship commits.
+    # False means metadata only (no historical code leaves the machine).
+    # Default True: a full window of subjects ("fix bug", "wip") names no
+    # pattern a reviewer could check, while the diff shows the shape of the
+    # failure. See docs/git-evidence.md#privacy for what is sent.
+    send_code_excerpts: bool = True
 
 
 @dataclass(frozen=True)
@@ -265,6 +271,9 @@ block_on_secrets = false   # true => skip the LLM call when a secret is suspecte
 [learn]
 learn_max_commits = 2000   # git history depth to mine
 profile_max_age_days = 30  # staleness notice threshold (never auto-refresh)
+send_code_excerpts = true  # mine bounded, secret-redacted diff excerpts from
+                           # relationship commits (reverts, fixes). false =>
+                           # commit metadata only, no historical code at all
 
 [github]
 enabled = "auto"           # auto | true | false — mine GitHub PR history in `spc learn`

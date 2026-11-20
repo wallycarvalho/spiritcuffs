@@ -79,3 +79,39 @@ def test_staleness_config_boundary(tmp_path: Path) -> None:
     config = SpcConfig()  # profile_max_age_days = 30
     notice = staleness_notice(tmp_path, config.learn.profile_max_age_days)
     assert notice is not None
+
+
+def _evidence_with_excerpts(*excerpts: str) -> GitEvidence:
+    from spc.githistory import CommitRecord
+
+    return GitEvidence(
+        commits_scanned=len(excerpts),
+        excerpts_enabled=True,
+        commits=[
+            CommitRecord(
+                sha=f"{index:040x}",
+                subject=f"fix: thing {index}",
+                author_timestamp=0,
+                committer_timestamp=0,
+                excerpt=excerpt,
+            )
+            for index, excerpt in enumerate(excerpts)
+        ],
+    )
+
+
+def test_oversized_excerpt_does_not_hide_the_others_from_the_prompt() -> None:
+    """One huge excerpt must be truncated, not abort the section.
+
+    Previously the loop broke on the first block that did not fit the budget,
+    so a single oversized excerpt silently removed every excerpt from the
+    synthesis prompt for the whole repository.
+    """
+    from spc.profile import MAX_EXCERPT_PROMPT_CHARS, _render_excerpt_section
+
+    huge = "-" + "x" * (MAX_EXCERPT_PROMPT_CHARS * 2)
+    section = _render_excerpt_section(_evidence_with_excerpts(huge, "-SMALL_MARKER_LINE"))
+
+    assert len(section) <= MAX_EXCERPT_PROMPT_CHARS + 200
+    assert "…(truncated)" in section
+    assert "-SMALL_MARKER_LINE" in section

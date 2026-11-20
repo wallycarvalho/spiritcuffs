@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from spc.config import SpcConfig
+from spc.config import LearnConfig, SpcConfig
 from spc.learn import run_learn
 from spc.profile import load_evidence, profile_path
 
@@ -77,11 +77,11 @@ def test_learn_no_git_repo_fails_soft(tmp_path: Path, quiet_console) -> None:
     assert run_learn(tmp_path, config, quiet_console) is False
 
 
-def test_learn_prompt_never_contains_file_contents(git_repo, monkeypatch, quiet_console) -> None:
-    """The synthesis prompt carries stats, not source code or secrets."""
+def test_learn_prompt_never_contains_secrets(git_repo, monkeypatch, quiet_console) -> None:
+    """Historical excerpts may carry code, but never an unredacted secret."""
     import spc.profile as profile_mod
 
-    secret_value = "AKIAIOSFODNN7EXAMPLE"
+    secret_value = "AKIA0123456789ABCDEF"
     repo = git_repo(
         {"src/a.py": f'key = "{secret_value}"\n'},
         later_commits=[("fix: thing", {"src/a.py": "key = None\n"})],
@@ -96,7 +96,62 @@ def test_learn_prompt_never_contains_file_contents(git_repo, monkeypatch, quiet_
     run_learn(repo, SpcConfig(), quiet_console)
     assert prompts, "synthesis must be called"
     assert secret_value not in prompts[0]
-    assert 'key = "' not in prompts[0]
+    assert "[REDACTED" in prompts[0]
+
+
+def test_learn_prompt_omits_code_when_excerpts_disabled(
+    git_repo, monkeypatch, quiet_console
+) -> None:
+    """``learn.send_code_excerpts = false`` keeps every line of source out."""
+    import spc.profile as profile_mod
+
+    repo = git_repo(
+        {"src/a.py": "MARKER_LINE_ONE = 1\n"},
+        later_commits=[("fix: thing", {"src/a.py": "MARKER_LINE_TWO = 2\n"})],
+    )
+    prompts = []
+
+    def fake_complete(messages, *, model, base_url, api_key, **kw):  # noqa: ANN001, ANN003
+        prompts.append(messages[-1]["content"])
+        return "# p"
+
+    monkeypatch.setattr(profile_mod.llm, "complete", fake_complete)
+    config = SpcConfig(learn=LearnConfig(send_code_excerpts=False))
+    run_learn(repo, config, quiet_console)
+    assert prompts, "synthesis must be called"
+    assert "MARKER_LINE_ONE" not in prompts[0]
+    assert "MARKER_LINE_TWO" not in prompts[0]
+
+
+def test_profile_drops_lines_that_quote_excerpt_code(
+    git_repo, monkeypatch, quiet_console
+) -> None:
+    """The documented leak filter must actually run on the synthesized profile.
+
+    A quoted excerpt would otherwise be written into ``.spc/profile.md`` and
+    injected into every later review prompt — a wider leak than the one-off
+    learn call the code was read for.
+    """
+    import spc.profile as profile_mod
+
+    repo = git_repo(
+        {"src/a.py": "QUOTABLE_CODE_LINE_ONE = 1\n"},
+        later_commits=[("fix: thing", {"src/a.py": "QUOTABLE_CODE_LINE_ONE = 2\n"})],
+    )
+
+    def fake_complete(messages, *, model, base_url, api_key, **kw):  # noqa: ANN001, ANN003
+        return (
+            "# Repo profile\n\n"
+            "## Recurring bug patterns\n"
+            "- Off-by-one in totals (`QUOTABLE_CODE_LINE_ONE = 2`) keeps reappearing.\n"
+            "- Keep an eye on the invoice rounding path.\n"
+        )
+
+    monkeypatch.setattr(profile_mod.llm, "complete", fake_complete)
+    assert run_learn(repo, SpcConfig(), quiet_console) is True
+    profile_md = profile_path(repo).read_text(encoding="utf-8")
+    assert "QUOTABLE_CODE_LINE_ONE" not in profile_md
+    assert "Keep an eye on the invoice rounding path." in profile_md
 
 
 def test_synthesis_prompt_omits_stats_only_fields(git_repo, monkeypatch, quiet_console) -> None:

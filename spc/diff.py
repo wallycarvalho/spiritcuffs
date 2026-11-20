@@ -27,13 +27,20 @@ def find_repo_root(start: Path | None = None) -> Path | None:
     return None
 
 
-def run_git(repo_root: Path, *args: str) -> str | None:
-    """Run a git command in *repo_root*; return stdout, or None on any failure."""
+def run_git(repo_root: Path, *args: str, decode_errors: str = "strict") -> str | None:
+    """Run a git command in *repo_root*; return stdout, or None on any failure.
+
+    ``decode_errors="replace"`` is for callers that want tolerant decoding —
+    git can emit non-UTF-8 bytes (a latin-1 commit message, a filename when
+    ``core.quotePath=false``), and a single such byte must not discard an
+    entire mining window.
+    """
     try:
         completed = subprocess.run(
             ["git", "-C", str(repo_root), *args],
             capture_output=True,
             text=True,
+            errors=decode_errors,
             check=True,
         )
     except (OSError, subprocess.CalledProcessError):

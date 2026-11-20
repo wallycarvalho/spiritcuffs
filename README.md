@@ -83,6 +83,10 @@ It does **not** see your source code, your `evidence.json` (raw PR data),
 your history log, or anything else on disk. Secrets in the diff are regex-
 scanned *before* the call; see the privacy section below.
 
+`spc learn` is a separate, one-off call with its own inputs (history
+statistics, relationship metadata, and — unless you opt out — bounded historical
+excerpts). See [Historical mining](#historical-mining).
+
 ### GitHub Copilot
 
 Works with any Copilot plan (Free included). Choosing it runs the official
@@ -102,6 +106,12 @@ re-auth) are documented in the privacy section below.
   snippets** are sent to the LLM provider configured in `.spc.toml` (`base_url`
   + `model`). Point `base_url` at a local endpoint (Ollama, LM Studio, vLLM)
   and nothing leaves your machine.
+- **`spc learn` also sends bounded historical excerpts** — up to 12 changed
+  lines each from up to 60 relationship commits (reverts, fixes) — so the model
+  can see the *shape* of past failures. Both diff sides are secret-redacted, the
+  prompt forbids quoting them, and a leak filter drops any profile line that
+  reproduces one. Set `[learn] send_code_excerpts = false` to mine metadata only
+  and never read historical code at all. Details: [docs/git-evidence.md](docs/git-evidence.md).
 - A **local regex scan** checks the diff for obvious secrets *before* the LLM call.
   Set `block_on_secrets = true` to skip the LLM call entirely when one is suspected.
 - **API keys / tokens** live in `~/.spc/config.toml` (mode 0600, outside any
@@ -140,6 +150,9 @@ block_on_secrets = false   # true => skip the LLM call when a secret is suspecte
 [learn]
 learn_max_commits = 2000   # git history depth to mine
 profile_max_age_days = 30  # staleness notice threshold (never auto-refresh)
+send_code_excerpts = true  # mine bounded, secret-redacted diff excerpts from
+                           # relationship commits (reverts, fixes). false =>
+                           # commit metadata only, no historical code at all
 
 [github]
 enabled = "auto"           # "auto" | true | false — mine merged PRs + review
@@ -172,6 +185,17 @@ Rate-limit aware, capped per run, and strictly fail-soft — any GitHub error
 downgrades to git-only learning with a one-line notice. Only synthesized
 **themes** enter `.spc/profile.md`; raw comments stay in the gitignored
 `.spc/evidence.json`.
+
+### Historical mining
+
+Git history is mined into structured evidence: per-commit records, plus
+**relationships** — reverts (a fact git asserts), fixes that modify code an
+earlier commit touched (a *hypothesis*, never a claim), fixes that touched no
+test, and files that repeatedly change together. Profile lines derived from them
+are marked `[observed]` or `[hypothesis]` and the model is told to treat a "fix"
+keyword as a keyword, not a root cause.
+
+Schema, caps, and the privacy/performance reasoning: [docs/git-evidence.md](docs/git-evidence.md).
 
 ### Token safety (GitHub Enterprise)
 
