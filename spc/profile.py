@@ -13,7 +13,14 @@ from pathlib import Path
 
 from spc import llm
 from spc.config import SpcConfig
-from spc.githistory import GIT_EVIDENCE_SCHEMA, GitEvidence, evidence_to_block
+from spc.githistory import (
+    CASCADE_MIN_FOLLOWUPS,
+    GIT_EVIDENCE_SCHEMA,
+    CommitRecord,
+    GitEvidence,
+    Relationship,
+    evidence_to_block,
+)
 from spc.githubhistory import GithubEvidence
 
 ARTIFACTS_DIRNAME = ".spc"
@@ -28,6 +35,25 @@ MAX_EXCERPT_PROMPT_CHARS = 8000
 # One excerpt may claim at most half the section: an oversized block must not
 # crowd out every other, and truncating it keeps the section informative.
 MAX_EXCERPT_BLOCK_CHARS = MAX_EXCERPT_PROMPT_CHARS // 2
+
+# Cascades: one change provoking several follow-up fixes. Tuples of this kind are
+# the profile's most expensive-to-derive claim, so they get their own budget.
+MAX_CASCADE_CHARS = 2000
+MAX_CASCADE_FILES = 5
+MAX_CASCADES = 12
+
+# Event ordering: what the character budget buys first when relationships exceed
+# it. Observed facts outrank hypotheses — a measured run ranked verbose
+# fix_after_change hypotheses above observed reverts, the reverts never rendered,
+# and the model wrote "reverts happened but without file-specific details", which
+# was false. Blind reverts are already collapsed to one line, so this ordering
+# only decides among events that carry files.
+RELATIONSHIP_PRIORITY = {
+    "revert": 0,
+    "co_change": 1,
+    "fix_without_test": 2,
+    "fix_after_change": 3,
+}
 
 
 def artifacts_dir(repo_root: Path) -> Path:
@@ -182,22 +208,34 @@ _SYNTHESIS_SYSTEM = (
     "beats a padded one.\n"
     "Structure (in this order, omit any section whose evidence is thin rather "
     "than padding it):\n"
-    "1. **Peer review themes** — what human reviewers repeatedly flag in this "
-    "repo (from PR comment themes when present). This is the headline section.\n"
-    "2. **Recurring bug patterns** — specific failure modes tied to where they "
+    "1. **Change cascades** — one bullet per line in the 'Change cascades' "
+    "evidence block, stating the count verbatim, the original change, and which "
+    "kinds of files needed follow-up. Put this section FIRST when that evidence "
+    "is present: it is the claim a reader could not cheaply derive themselves.\n"
+    "2. **Peer review themes** — what human reviewers repeatedly flag in this "
+    "repo (from PR comment themes when present).\n"
+    "3. **Recurring bug patterns** — specific failure modes tied to where they "
     "recur (e.g. \"N+1 queries in api/\"), not generic watchfulness.\n"
-    "3. **Non-obvious conventions** — only things a newcomer could NOT guess "
+    "4. **Non-obvious conventions** — only things a newcomer could NOT guess "
     "from reading the code.\n"
-    "4. **What to double-check** — concrete, repo-specific checks (e.g. \"when "
+    "5. **What to double-check** — concrete, repo-specific checks (e.g. \"when "
     "touching src/db/, verify migration parity\"), not generic advice.\n"
-    "A \"Historical events\" section may list past fix/revert relationships. Each "
-    "line is marked [observed] (git data asserts the link) or [hypothesis] (the "
-    "commits merely touch the same files within a time window). Use [observed] "
-    "lines as fact and [hypothesis] lines ONLY to suggest what to watch for — "
-    "never claim a hypothesis shows causation. A commit subject containing "
-    "\"fix\" is a keyword, not proof of a root cause. When the same failure "
-    "recurs in two or more relationship entries, say so as a pattern; for a "
-    "single entry, describe it as an incident, not a rule.\n"
+    "6. **Historical events** — one bullet per line in the 'Historical events' "
+    "evidence block that carries file paths. Name the files.\n"
+    "Each event line is marked [observed] (git data asserts the link) or "
+    "[hypothesis] (the commits merely touch the same files within a time "
+    "window). Use [observed] lines as fact and [hypothesis] lines ONLY to "
+    "suggest what to watch for — never claim a hypothesis shows causation. A "
+    "commit subject containing \"fix\" is a keyword, not proof of a root cause.\n"
+    "NEVER collapse distinct events into a category summary. Writing \"reverts "
+    "cluster in documentation and CI files\" when the evidence lists a revert "
+    "of cache_utils.py + masking_utils.py and another of modeling_utils.py + "
+    "fsdp.py destroys the only part a reader cannot re-derive — which files "
+    "travel together. If two or more entries share the same file coupling, say "
+    "that once and still name the files; otherwise give each its own bullet.\n"
+    "If an event line says some reverts are \"not listed individually\" because "
+    "the scanned window lacks their targets, that is a sampling limit ONLY — "
+    "never write that this repo's reverts lack file details.\n"
     "Historical code excerpts may be provided to show the shape of past "
     "failures. Never quote, paraphrase, or restate that code — extract only the "
     "failure mode in plain language.\n"
@@ -219,6 +257,12 @@ def _render_synthesis_prompt(evidence: GitEvidence, extra_evidence_md: str) -> s
     headline of the profile, and a long excerpts block placed ahead of it
     competes with it for the model's attention, pulling the synthesis away
     from what reviewers actually said.
+
+    Change cascades get their own section ahead of the flat event list. They
+    are the one insight here that cannot be cheaply re-derived from ``git log``
+    (it takes per-commit diff overlap across the whole window), and a measured
+    A/B showed that when cascades only appear as ordinary event lines the
+    synthesis drops them entirely in favour of category headings.
     """
     evidence_json = json.dumps(
         {
@@ -237,6 +281,17 @@ def _render_synthesis_prompt(evidence: GitEvidence, extra_evidence_md: str) -> s
     ]
     if extra_evidence_md.strip():
         parts.extend(["## Peer review evidence", extra_evidence_md])
+    cascades = _render_cascade_section(evidence)
+    if cascades:
+        parts.extend(
+            [
+                "## Change cascades",
+                "Each line states how many follow-up fixes one earlier change "
+                "provoked. Report every one of them in a '## Change cascades' "
+                "section at the top of the profile, using the count verbatim.",
+                cascades,
+            ]
+        )
     events = _render_relationship_section(evidence)
     if events:
         parts.extend(["## Historical events", events])
@@ -253,34 +308,153 @@ def _render_synthesis_prompt(evidence: GitEvidence, extra_evidence_md: str) -> s
     return "\n".join(parts)
 
 
+def _split_informative(
+    relationships: list[Relationship], subjects: dict[str, str]
+) -> tuple[list[Relationship], list[Relationship]]:
+    """Split reverts into (nameable, blind).
+
+    A revert whose target lies outside the scanned window and which touched no
+    files tells the reader nothing beyond "something was undone" — it carries
+    only a SHA. There were 41 such entries in a 2000-commit window of
+    transformers, and rendering them individually spent over half of the
+    section budget on the least informative lines.
+    """
+    blind: list[Relationship] = []
+    informative: list[Relationship] = []
+    for relationship in relationships:
+        resolvable = any(sha in subjects for sha in relationship.commits[1:])
+        if relationship.kind == "revert" and not relationship.files and not resolvable:
+            blind.append(relationship)
+        else:
+            informative.append(relationship)
+    return blind, informative
+
+
+def _cascade_groups(evidence: GitEvidence) -> list[tuple[str, list[Relationship]]]:
+    """Group ``fix_after_change`` links by the earlier commit they follow.
+
+    Returns ``(parent_sha, relationships)`` for parents with at least
+    ``CASCADE_MIN_FOLLOWUPS`` follow-ups, most follow-ups first. One change
+    attracting several fixes is a different and more actionable signal than
+    several unrelated fixes: it names a change *class* that historically
+    breaks in more than one place.
+    """
+    by_parent: dict[str, list[Relationship]] = {}
+    for relationship in evidence.relationships:
+        if relationship.kind != "fix_after_change" or len(relationship.commits) < 2:
+            continue
+        by_parent.setdefault(relationship.commits[1], []).append(relationship)
+    groups = [
+        (parent, items)
+        for parent, items in by_parent.items()
+        if len(items) >= CASCADE_MIN_FOLLOWUPS
+    ]
+    groups.sort(key=lambda pair: (-len(pair[1]), pair[0]))
+    return groups[:MAX_CASCADES]
+
+
+def _render_cascade_section(evidence: GitEvidence) -> str:
+    """One line per change that provoked several follow-up fixes."""
+    subjects = {commit.sha: commit.subject for commit in evidence.commits}
+    lines: list[str] = []
+    for parent, followups in _cascade_groups(evidence):
+        files = sorted({path for item in followups for path in item.files})
+        more = ""
+        if len(files) > MAX_CASCADE_FILES:
+            more = f" (+{len(files) - MAX_CASCADE_FILES} more)"
+        shown = ", ".join(files[:MAX_CASCADE_FILES]) or "no file data"
+        lines.append(
+            f'- {len(followups)} follow-up fixes after '
+            f'"{_shorten(subjects.get(parent, parent[:10]), 75)}" — {shown}{more}'
+        )
+    return _cap_lines(lines, MAX_CASCADE_CHARS)
+
+
 def _render_relationship_section(evidence: GitEvidence) -> str:
     """Compact, one-line-per-relationship listing — metadata only, no code.
 
     Each line carries the epistemic marker: ``observed`` relationships are
     stated by git data, ``hypothesis`` ones only co-locate commits in time and
     files, so the model must not phrase them as causes.
+
+    Blind reverts collapse to one line, cascades are emitted by
+    :func:`_render_cascade_section`, duplicate co-change pairs are folded, and
+    what remains is ordered by information value rather than by detector order
+    so the character budget buys the most explanatory events first.
     """
     if not evidence.relationships:
         return ""
     subjects = {commit.sha: commit.subject for commit in evidence.commits}
+    blind, informative = _split_informative(evidence.relationships, subjects)
+    cascaded = {parent for parent, _ in _cascade_groups(evidence)}
+
     lines: list[str] = []
-    for relationship in evidence.relationships:
-        marker = "observed" if relationship.observed else "hypothesis"
-        commits = ", ".join(
-            f"{sha[:8]} {_shorten(subjects.get(sha, ''))}"
-            for sha in relationship.commits[:3]
+    if blind:
+        lines.append(
+            f"- [observed] revert: {len(blind)} further reverts have no subject or "
+            "files in the scanned window and are not listed individually — this "
+            "is a limit of the window, NOT evidence that reverts lack file data"
         )
-        files = ", ".join(relationship.files[:4])
-        line = f"- [{marker}] {relationship.kind}: {relationship.note}"
-        detail = " — ".join(part for part in (commits, files) if part)
-        if detail:
-            line += f" ({detail})"
-        lines.append(line)
+    seen_pairs: set[tuple[str, ...]] = set()
+    ranked = sorted(
+        informative,
+        key=lambda item: RELATIONSHIP_PRIORITY.get(item.kind, len(RELATIONSHIP_PRIORITY)),
+    )
+    for relationship in ranked:
+        if relationship.kind == "co_change":
+            pair = tuple(sorted(relationship.files))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+        if (
+            relationship.kind == "fix_after_change"
+            and len(relationship.commits) > 1
+            and relationship.commits[1] in cascaded
+        ):
+            continue
+        lines.append(_render_relationship_line(relationship, subjects))
     return _cap_lines(lines, MAX_EVENTS_CHARS)
+
+
+def _render_relationship_line(relationship: Relationship, subjects: dict[str, str]) -> str:
+    """One relationship as a single line, shaped per kind.
+
+    Lines are composed from the structured fields rather than from the stored
+    ``note``: the note repeats the subject and file list that are already here,
+    so rendering both truncated every subject twice and made a hypothesis line
+    longer than an observed one.
+
+    ``co_change`` names the file pair first — the pair *is* the finding, and an
+    earlier version that emitted only the commit count discarded the payload.
+    """
+    marker = "observed" if relationship.observed else "hypothesis"
+    if relationship.kind == "co_change":
+        return f"- [{marker}] co_change: {' + '.join(relationship.files[:2])} — {relationship.note}"
+    files = ", ".join(relationship.files[:3])
+    if relationship.kind == "revert":
+        target = relationship.note.removeprefix("revert of ")
+        return f"- [{marker}] revert: {target} — {files}" if files else (
+            f"- [{marker}] revert: {target}"
+        )
+    fix_subject = _shorten(subjects.get(relationship.commits[0], ""), 60)
+    if relationship.kind == "fix_after_change" and len(relationship.commits) > 1:
+        parent = _shorten(subjects.get(relationship.commits[1], relationship.commits[1][:8]), 60)
+        return f'- [{marker}] fix follows "{parent}" — {fix_subject} ({files})' if files else (
+            f'- [{marker}] fix follows "{parent}" — {fix_subject}'
+        )
+    return f"- [{marker}] {relationship.kind}: {fix_subject} ({files})" if files else (
+        f"- [{marker}] {relationship.kind}: {fix_subject}"
+    )
 
 
 def _render_excerpt_section(evidence: GitEvidence) -> str:
     """Bounded, redacted snippets for commits that already carry an excerpt.
+
+    Excerpts are selected by explanatory value, not by citation order: cascade
+    parents and the fixes they provoked come first. Citation order is
+    detector order, which means every revert is cited before any fix — measured
+    on a 2000-commit window, all 60 excerpt slots went to the revert cohort and
+    none to the cascades.
 
     One block may claim at most half the section's budget, so an oversized
     excerpt cannot starve every later one, and the loop stops cleanly when the
@@ -289,9 +463,10 @@ def _render_excerpt_section(evidence: GitEvidence) -> str:
     with_excerpt = [commit for commit in evidence.commits if commit.excerpt]
     if not with_excerpt:
         return ""
+    ordered = _order_excerpts_by_value(with_excerpt, evidence)
     blocks: list[str] = []
     used = 0
-    for commit in with_excerpt:
+    for commit in ordered:
         header = f"### {commit.sha[:8]} {_shorten(commit.subject)}"
         block = f"{header}\n```diff\n{commit.excerpt}\n```"
         remaining = MAX_EXCERPT_PROMPT_CHARS - used
@@ -303,6 +478,24 @@ def _render_excerpt_section(evidence: GitEvidence) -> str:
         blocks.append(block)
         used += len(block)
     return "\n\n".join(blocks)
+
+
+def _order_excerpts_by_value(
+    with_excerpt: list[CommitRecord], evidence: GitEvidence
+) -> list[CommitRecord]:
+    """Cascade parents first, then their follow-ups, then everything else.
+
+    Ordering is stable within each tier so a rerun produces the same profile.
+    """
+    tier: dict[str, int] = {}
+    for parent, followups in _cascade_groups(evidence):
+        tier.setdefault(parent, 0)
+        for relationship in followups:
+            tier.setdefault(relationship.commits[0], 1)
+    return sorted(
+        with_excerpt,
+        key=lambda commit: (tier.get(commit.sha, 2), -len(commit.files)),
+    )
 
 
 def _cap_excerpt_block(block: str, max_chars: int) -> str:

@@ -277,6 +277,46 @@ def test_excerpts_disabled_fetches_no_code(git_repo) -> None:
     assert all(not commit.excerpt for commit in evidence.commits)
 
 
+def test_excerpt_budget_follows_cascades_not_citation_order(git_repo, monkeypatch) -> None:
+    """Citation order is detector order: every revert is cited before any fix.
+
+    On a 2000-commit window that meant all 60 excerpt slots went to the revert
+    cohort and none to the fixes a single change provoked — the one signal the
+    profile cannot derive any other way. With a budget of two, the cascade must
+    win and the reverts must lose.
+    """
+    from spc import githistory
+
+    repo = git_repo({"src/a.py": "a = 1\n", "src/b.py": "b = 1\n"})
+    (repo / "src" / "a.py").write_text("a = 2\n", encoding="utf-8")
+    (repo / "src" / "b.py").write_text("b = 2\n", encoding="utf-8")
+    run_git(repo, "add", "src/a.py", "src/b.py")
+    run_git(repo, "commit", "-m", "feat: rename the cache parameter")
+    # The two follow-ups touch different files, so neither can link to the
+    # other — both point back at the rename, which is what makes a cascade.
+    (repo / "src" / "a.py").write_text("a = 3\n", encoding="utf-8")
+    run_git(repo, "add", "src/a.py")
+    run_git(repo, "commit", "-m", "fix: follow-up in a")
+    (repo / "src" / "b.py").write_text("b = 3\n", encoding="utf-8")
+    run_git(repo, "add", "src/b.py")
+    run_git(repo, "commit", "-m", "fix: follow-up in b")
+    (repo / "src" / "c.py").write_text("c = 1\n", encoding="utf-8")
+    run_git(repo, "add", "src/c.py")
+    run_git(repo, "commit", "-m", "feat: risky c")
+    run_git(repo, "revert", "--no-edit", "HEAD")
+
+    monkeypatch.setattr(githistory, "MAX_EXCERPT_COMMITS", 2)
+    evidence = githistory.mine_git_history(repo, max_commits=50)
+    assert evidence is not None
+
+    by_sha = {commit.sha: commit for commit in evidence.commits}
+    parent = next(c for c in evidence.commits if "rename the cache" in c.subject)
+    revert = next(c for c in evidence.commits if c.subject.startswith("Revert"))
+
+    assert parent.excerpt, "the cascade parent lost its excerpt to the revert cohort"
+    assert not by_sha[revert.sha].excerpt, "the revert took a budget it cannot spend"
+
+
 def test_excerpt_redacts_secret_removed_by_a_fix(git_repo) -> None:
     """A historical fix often shows a secret being removed — the ``-`` side must be clean too."""
     secret = AWS_FIXTURE_KEY

@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -22,6 +22,10 @@ DEFAULT_BASE_URL = "https://api.github.com"
 DEFAULT_HTTP_TIMEOUT = 15.0
 # A first run must be bounded even on huge repos: hard ceiling on API calls.
 MAX_API_CALLS_PER_RUN = 60
+# GitHub's maximum for list endpoints. Fetching PRs and comments 100 at a
+# time is what makes the per-run call ceiling reachable: at 1 call per PR,
+# ``github_max_prs = 200`` could never be honoured inside 60 calls.
+PAGE_SIZE = 100
 
 
 class GithubApiError(RuntimeError):
@@ -137,6 +141,12 @@ def split_owner_repo_from_path(remote_url: str) -> tuple[str, str] | None:
     if not owner or not repo:
         return None
     return owner, repo
+
+
+def _pull_number_from_url(pull_request_url: str) -> int:
+    """PR number from a comment's ``pull_request_url``; 0 when unparseable."""
+    tail = pull_request_url.rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
 
 
 def resolve_token() -> str | None:
@@ -260,13 +270,17 @@ class GithubClient:
         return response
 
     def iter_merged_pulls(
-        self, owner: str, repo: str, *, min_number: int = 0
+        self, owner: str, repo: str, *, seen: Collection[int] = ()
     ) -> Iterator[dict[str, Any]]:
-        """Yield merged PRs newest-first, stopping at caps and the watermark.
+        """Yield merged PRs newest-first, skipping numbers in *seen*.
 
-        *min_number* is the stored watermark: PRs numbered at or below it were
-        mined by a previous run and are skipped.
+        *seen* is the set of PR numbers already stored by a previous run.
+        Skipping by identity rather than by a high-water mark is what makes a
+        truncated run self-healing: a walk that stops early records the PRs it
+        actually got, and the next run walks the same newest-first order, skips
+        those, and continues into the range that was never reached.
         """
+        already = seen if isinstance(seen, (set, frozenset)) else set(seen)
         page = 1
         while page <= self._caps.pages_max:
             if self.stats.prs_fetched >= self._caps.max_prs:
@@ -275,7 +289,7 @@ class GithubClient:
             try:
                 response = self._get(
                     f"{self._caps.base_url.rstrip('/')}/repos/{owner}/{repo}/pulls",
-                    params={"state": "closed", "per_page": 50, "page": page,
+                    params={"state": "closed", "per_page": PAGE_SIZE, "page": page,
                             "sort": "created", "direction": "desc"},
                 )
             except (RateLimitedError, BudgetExhaustedError):
@@ -293,8 +307,8 @@ class GithubClient:
                 number = pull.get("number")
                 if not isinstance(number, int):
                     continue
-                if number <= min_number:
-                    return  # older than the watermark — everything after is too
+                if number in already:
+                    continue
                 if pull.get("merged_at") is None:
                     continue  # closed-but-unmerged PRs carry no review signal
                 if self.stats.prs_fetched >= self._caps.max_prs:
@@ -304,30 +318,49 @@ class GithubClient:
                 yield pull
             page += 1
 
-    def fetch_review_comments(
-        self, owner: str, repo: str, pull_number: int
-    ) -> list[dict[str, Any]]:
-        """Inline review comments for one PR, bounded by the global comment cap."""
-        if self.stats.comments_fetched >= self._caps.max_comments:
-            self.stats.stopped_reason = "cap_comments"
-            return []
-        try:
-            response = self._get(
-                f"{self._caps.base_url.rstrip('/')}/repos/{owner}/{repo}"
-                f"/pulls/{pull_number}/comments",
-                params={"per_page": 50},
-            )
-        except (RateLimitedError, BudgetExhaustedError):
-            return []  # comment budget is spent; PR walk stops gracefully next page
-        try:
-            batch = response.json()
-        except ValueError as exc:
-            raise GithubApiError(f"malformed JSON: {exc}") from exc
-        if not isinstance(batch, list):
-            return []
-        budget = self._caps.max_comments - self.stats.comments_fetched
-        trimmed = [c for c in batch if isinstance(c, dict)][:budget]
-        self.stats.comments_fetched += len(trimmed)
-        if len(trimmed) < len([c for c in batch if isinstance(c, dict)]):
-            self.stats.stopped_reason = "cap_comments"
-        return trimmed
+    def iter_review_comments(
+        self, owner: str, repo: str
+    ) -> Iterator[dict[str, Any]]:
+        """Yield inline review comments repo-wide, newest-first.
+
+        One call returns 100 comments for the whole repository instead of one
+        call per PR — the difference between "a 60-call budget covers 1000
+        comments" and "it covers 27".
+
+        Each item is annotated with ``_pr_number`` (parsed from
+        ``pull_request_url``) because the list endpoint does not include it.
+        """
+        page = 1
+        while page <= self._caps.pages_max:
+            if self.stats.comments_fetched >= self._caps.max_comments:
+                self.stats.stopped_reason = "cap_comments"
+                return
+            try:
+                response = self._get(
+                    f"{self._caps.base_url.rstrip('/')}/repos/{owner}/{repo}"
+                    f"/pulls/comments",
+                    params={"per_page": PAGE_SIZE, "page": page,
+                            "sort": "created", "direction": "desc"},
+                )
+            except (RateLimitedError, BudgetExhaustedError):
+                return  # graceful stop — already-yielded comments stay
+            self.stats.pages_fetched += 1
+            try:
+                batch = response.json()
+            except ValueError as exc:
+                raise GithubApiError(f"malformed JSON: {exc}") from exc
+            if not isinstance(batch, list) or not batch:
+                return
+            for comment in batch:
+                if not isinstance(comment, dict):
+                    continue
+                if self.stats.comments_fetched >= self._caps.max_comments:
+                    self.stats.stopped_reason = "cap_comments"
+                    return
+                annotated = dict(comment)
+                annotated["_pr_number"] = _pull_number_from_url(
+                    str(comment.get("pull_request_url", ""))
+                )
+                self.stats.comments_fetched += 1
+                yield annotated
+            page += 1

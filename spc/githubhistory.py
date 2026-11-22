@@ -63,7 +63,10 @@ class GithubEvidence:
     owner: str
     repo: str
     mined_at: float = 0.0
-    watermark: int = 0  # highest PR number seen; re-runs fetch only newer
+    # Highest PR number ever seen. Informational only (shown in `spc history`
+    # and used to sort evidence); NOT a fetch gate — incremental mining skips
+    # by PR identity so a truncated run can be resumed.
+    watermark: int = 0
     pulls: list[PrRecord] = field(default_factory=list)
     comments: list[CommentRecord] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
@@ -182,18 +185,30 @@ def mine_github(
     *,
     previous: GithubEvidence | None = None,
     client_factory: Any = None,
+    stats_out: dict[str, Any] | None = None,
 ) -> GithubEvidence | None:
     """Fetch merged PRs + review comments into :class:`GithubEvidence`.
 
-    Watermark-incremental: when *previous* evidence exists for the same repo,
-    only PRs newer than its watermark are fetched and merged into it. Returns
-    None when there is nothing to mine (no remote, disabled, no new PRs, or
-    any API failure — the caller prints the reason). Rate-limit and API-budget
-    exhaustion stop gracefully, keeping what was fetched.
+    Incremental by identity, not by a high-water mark: PR numbers already in
+    *previous* are skipped, and the walk continues into older ranges a
+    truncated earlier run never reached.
+
+    Returns None when there is nothing to mine (no remote, disabled, no new
+    PRs, or any API failure). The caller needs to tell those apart, so
+    *stats_out*, when given, receives ``{"reason": ..., "stats": ...}`` —
+    ``reason`` being one of ``no_remote``/``api_error``/``no_new``/
+    ``truncated``/``mined``. Rate-limit and API-budget exhaustion stop
+    gracefully, keeping what was fetched.
     """
+    def finish(reason: str, evidence: GithubEvidence | None, stats: Any = None) -> Any:
+        if stats_out is not None:
+            stats_out["reason"] = reason
+            stats_out["stats"] = stats
+        return evidence
+
     gh_repo = detect_github_repo(repo_root)
     if gh_repo is None:
-        return None
+        return finish("no_remote", None)
     owner, repo_name = gh_repo
 
     caps = FetchCaps(
@@ -219,16 +234,21 @@ def mine_github(
 
             client = GithubClient(resolve_github_token(), caps, origin_host=origin_host)
         try:
-            return _mine_with_client(client, owner, repo_name, previous)
+            evidence = _mine_with_client(client, owner, repo_name, previous)
+            stats = client.stats
+            if evidence is None:
+                return finish("no_new", None, stats)
+            reason = "mined" if stats.stopped_reason == "complete" else "truncated"
+            return finish(reason, evidence, stats)
         except GithubApiError:
             # Rate-limit/budget exhaustion is handled inside _mine_with_client
             # (graceful stop, keep fetched work); anything else discards the
             # run — fail-soft.
-            return None
+            return finish("api_error", None, client.stats)
         finally:
             client.close()
     except GithubApiError:
-        return None
+        return finish("api_error", None)
 
 
 def _mine_with_client(
@@ -237,57 +257,66 @@ def _mine_with_client(
     repo_name: str,
     previous: GithubEvidence | None,
 ) -> GithubEvidence | None:
-    """Drive the client through PR pages and comment endpoints."""
+    """Drive the client through PR pages and the repo-wide comment stream."""
     reused = (
         previous
         if (previous and previous.owner == owner and previous.repo == repo_name)
         else None
     )
-    watermark = reused.watermark if reused else 0
+    already_mined = {pull.number for pull in reused.pulls} if reused else set()
 
     evidence = GithubEvidence(
         owner=owner,
         repo=repo_name,
         mined_at=time.time(),
-        watermark=watermark,
+        watermark=reused.watermark if reused else 0,
         pulls=list(reused.pulls) if reused else [],
         comments=list(reused.comments) if reused else [],
     )
 
     new_prs: list[PrRecord] = []
-    new_comments: list[CommentRecord] = []
-    try:
-        for pull in client.iter_merged_pulls(owner, repo_name, min_number=watermark):
-            number = int(pull.get("number", 0))
-            record = PrRecord(
-                number=number,
+    for pull in client.iter_merged_pulls(owner, repo_name, seen=already_mined):
+        new_prs.append(
+            PrRecord(
+                number=int(pull.get("number", 0)),
                 title=str(pull.get("title", ""))[:300],
                 merged_at=str(pull.get("merged_at", "")),
                 additions=int(pull.get("additions", 0) or 0),
                 deletions=int(pull.get("deletions", 0) or 0),
                 changed_files=int(pull.get("changed_files", 0) or 0),
                 labels=[
-                    str(lb.get("name", "")) for lb in pull.get("labels", []) if isinstance(lb, dict)
+                    str(lb.get("name", ""))
+                    for lb in pull.get("labels", [])
+                    if isinstance(lb, dict)
                 ],
             )
-            new_prs.append(record)
-            for comment in client.fetch_review_comments(owner, repo_name, number):
-                new_comments.append(
-                    CommentRecord(
-                        pr_number=number,
-                        path=str(comment.get("path", "")),
-                        body_snippet=str(comment.get("body", ""))[:MAX_COMMENT_CHARS * 2],
-                    )
-                )
-    except RateLimitedError:
-        pass  # keep everything fetched so far; stats.stopped_reason already says why
+        )
 
     if not new_prs:
         return None  # nothing new — previous evidence already covers the repo
 
+    # Comments are fetched repo-wide (100 per call) and filtered to the PRs
+    # just mined: one call per 100 comments instead of one call per PR.
+    wanted = {record.number for record in new_prs}
+    new_comments: list[CommentRecord] = []
+    try:
+        for comment in client.iter_review_comments(owner, repo_name):
+            pr_number = int(comment.get("_pr_number", 0) or 0)
+            if pr_number not in wanted:
+                continue
+            new_comments.append(
+                CommentRecord(
+                    pr_number=pr_number,
+                    path=str(comment.get("path", "")),
+                    body_snippet=str(comment.get("body", ""))[: MAX_COMMENT_CHARS * 2],
+                )
+            )
+    except RateLimitedError:
+        pass  # keep everything fetched so far; stats.stopped_reason says why
+
     evidence.pulls.extend(new_prs)
     evidence.comments.extend(new_comments)
-    evidence.watermark = max([watermark, *(p.number for p in new_prs)])
+    evidence.watermark = max([evidence.watermark, *(p.number for p in new_prs)])
     evidence.stats = {
         "prs_fetched": client.stats.prs_fetched,
         "comments_fetched": client.stats.comments_fetched,

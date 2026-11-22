@@ -72,6 +72,9 @@ MAX_CITED_CO_CHANGE_COMMITS = 3
 CO_CHANGE_MIN_SUPPORT = 3
 # A "follow-up" fix must land within this window of the change it may correct.
 FIX_FOLLOWUP_MAX_DAYS = 180
+# Two follow-ups is the smallest count that describes a pattern; one is a link.
+# Shared with profile.py, which ranks cascades and excerpts by this threshold.
+CASCADE_MIN_FOLLOWUPS = 2
 
 # One ``git log`` call yields per-commit headers *and* numstat, so mining never
 # pays a per-commit subprocess. ``%x00`` starts a record, ``%x1f`` separates
@@ -351,26 +354,29 @@ def _hotspots(commits: list[CommitRecord]) -> list[tuple[str, int]]:
 def _bug_classes(commits: list[CommitRecord]) -> list[dict[str, object]]:
     """Frequency + top file clusters of fix/hotfix/revert commits, noise-excluded.
 
+    ``top_files`` is counted per keyword, not shared across keywords: a single
+    ``hotfix`` commit must not inherit the file clusters of 700 ``fix`` commits,
+    which would present one commit's files as a trend.
+
     Keyword frequency only — this is a *statistic*, not evidence that any
     particular fix corrected any particular change. See ``detect_relationships``
     for links that carry their supporting commits.
     """
-    bug_files: Counter[str] = Counter()
     keyword_counts: Counter[str] = Counter()
+    files_by_keyword: dict[str, Counter[str]] = {}
     for commit in commits:
         matched = _bug_keywords(commit.subject)
         if not matched:
             continue
+        paths = [path for path in commit.paths() if not _is_noise(path)]
         for keyword in matched:
             keyword_counts[keyword] += 1
-        for path in commit.paths():
-            if not _is_noise(path):
-                bug_files[path] += 1
+            files_by_keyword.setdefault(keyword, Counter()).update(paths)
     return [
         {
             "keyword": keyword,
             "count": keyword_counts[keyword],
-            "top_files": [path for path, _ in bug_files.most_common(5)],
+            "top_files": [path for path, _ in files_by_keyword[keyword].most_common(5)],
         }
         for keyword in ("fix", "hotfix", "revert")
         if keyword_counts[keyword]
@@ -716,6 +722,12 @@ def _commits_in_relationships(
 
     Requirement 5: never persist whole histories. *repo_root* is None when
     excerpts are disabled — then no diff is fetched at all.
+
+    The excerpt budget follows explanatory value, not citation order. Citation
+    order is detector order, so every revert is cited before any fix — measured
+    on a 2000-commit window, all 60 excerpt slots went to the revert cohort and
+    none to the fixes that followed a single change, which is the signal the
+    profile is least able to derive any other way.
     """
     cited: list[str] = []
     seen: set[str] = set()
@@ -729,21 +741,41 @@ def _commits_in_relationships(
     if repo_root is None:
         return kept
 
+    priority = _excerpt_priority(relationships)
+    ordered = sorted(kept, key=lambda commit: priority.get(commit.sha, 2))
     budget = MAX_EXCERPT_BYTES
-    with_excerpts: list[CommitRecord] = []
-    for index, commit in enumerate(kept):
+    excerpts: dict[str, str] = {}
+    for index, commit in enumerate(ordered):
         if index >= MAX_EXCERPT_COMMITS or budget <= 0:
-            with_excerpts.append(commit)
-            continue
+            break
         excerpt = _bounded_excerpt(repo_root, commit)
         if not excerpt:
-            with_excerpts.append(commit)
             continue
         # One excerpt is already byte-capped, so the total can only overshoot
         # by less than MAX_EXCERPT_COMMIT_BYTES — never by a whole blob.
         budget -= len(excerpt.encode("utf-8"))
-        with_excerpts.append(replace(commit, excerpt=excerpt))
-    return with_excerpts
+        excerpts[commit.sha] = excerpt
+    # Persist in citation order so the file reads newest-first like git log.
+    return [
+        replace(commit, excerpt=excerpts[commit.sha]) if commit.sha in excerpts else commit
+        for commit in kept
+    ]
+
+
+def _excerpt_priority(relationships: list[Relationship]) -> dict[str, int]:
+    """Rank commits for excerpting: cascade parents, then their fixes, then rest."""
+    followups: dict[str, int] = {}
+    for relationship in relationships:
+        if relationship.kind == "fix_after_change" and len(relationship.commits) > 1:
+            followups[relationship.commits[1]] = followups.get(relationship.commits[1], 0) + 1
+    parents = {sha for sha, count in followups.items() if count >= CASCADE_MIN_FOLLOWUPS}
+    priority: dict[str, int] = {sha: 0 for sha in parents}
+    for relationship in relationships:
+        if relationship.kind != "fix_after_change" or len(relationship.commits) < 2:
+            continue
+        if relationship.commits[1] in parents:
+            priority.setdefault(relationship.commits[0], 1)
+    return priority
 
 
 def _bounded_excerpt(repo_root: Path, commit: CommitRecord) -> str:

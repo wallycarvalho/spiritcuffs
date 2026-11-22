@@ -8,6 +8,7 @@ failure → warning, False — NO fallback profile; user re-runs ``spc learn``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 
@@ -17,7 +18,6 @@ from spc.githubhistory import (
     GithubEvidence,
     cluster_themes,
     decide_mining,
-    detect_github_repo,
     mine_github,
 )
 from spc.profile import (
@@ -91,20 +91,22 @@ def _mine_github_source(repo_root: Path, config: SpcConfig, console: Console) ->
         return _cached_github_section(repo_root)
 
     previous = load_github_evidence(repo_root)
-    mined = mine_github(repo_root, config, previous=previous)
+    outcome: dict[str, Any] = {}
+    mined = mine_github(repo_root, config, previous=previous, stats_out=outcome)
     if mined is None:
-        if detect_github_repo(repo_root) is None:
-            console.print(
-                "[dim]spiritcuffs:[/] origin is not a github remote — skipping GitHub mining."
-            )
-        else:
-            console.print(f"[dim]spiritcuffs:[/] {_skip_reason(repo_root, config)}")
+        console.print(f"[dim]spiritcuffs:[/] {_skip_reason(outcome, previous)}")
         return _cached_github_section(repo_root)
 
     save_github_evidence(repo_root, mined.to_dict())
     console.print(
         f"  mined {len(mined.pulls)} merged PRs · {len(mined.comments)} review comments"
     )
+    if outcome.get("reason") == "truncated":
+        stopped = getattr(outcome.get("stats"), "stopped_reason", "a cap")
+        console.print(
+            f"[yellow]spiritcuffs:[/] stopped early ({stopped}) — the next run "
+            "resumes from here; nothing already mined is re-fetched."
+        )
 
     themes = cluster_themes(mined, config)
     if themes is None:
@@ -227,16 +229,27 @@ def _excerpt_fingerprints(evidence: GitEvidence) -> list[str]:
     return list(fingerprints)
 
 
-def _skip_reason(repo_root: Path, config: SpcConfig) -> str:
-    """One-line, accurate reason why GitHub mining was skipped this run."""
-    previous = load_github_evidence(repo_root)
-    if previous is not None and not previous.stats.get(
-        "stopped_reason", "complete"
-    ).startswith(("rate_limit", "budget", "error")):
-        return "GitHub mining skipped — no new merged PRs since the last run."
+def _skip_reason(outcome: dict[str, Any], previous: Any) -> str:
+    """One-line, accurate reason why GitHub mining was skipped this run.
+
+    The reason comes from :func:`spc.githubhistory.mine_github` itself — the
+    old version re-derived it from the *previous* run's cached stats, so a
+    single truncated run made every later healthy run print "the API rejected
+    us", which was false.
+    """
+    reason = str(outcome.get("reason", "api_error"))
+    stored = (
+        f" {len(previous.pulls)} merged PRs already stored."
+        if previous is not None and previous.pulls
+        else ""
+    )
+    if reason == "no_remote":
+        return "origin is not a github remote — skipping GitHub mining."
+    if reason == "no_new":
+        return f"GitHub mining found no new merged PRs.{stored}"
     return (
-        "GitHub mining skipped — no merged PRs found, or the API rejected us "
-        "(check `gh auth status` / GITHUB_TOKEN, or the repo has no PRs yet)."
+        "GitHub mining skipped — the API rejected us (check `gh auth status` / "
+        "GITHUB_TOKEN, or the repo has no PRs yet)."
     )
 
 

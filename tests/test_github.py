@@ -23,6 +23,7 @@ from spc.githubapi import (
 )
 from spc.githubhistory import (
     GithubEvidence,
+    PrRecord,
     cluster_themes,
     decide_mining,
     detect_github_repo,
@@ -168,16 +169,18 @@ def test_pagination_stops_at_pages_max() -> None:
 
 
 def test_caps_max_prs_and_comments() -> None:
-    seen_comments: list[int] = []
-
     def handler(request: httpx.Request) -> httpx.Response:
         url_path = request.url.path
         if url_path.endswith("/pulls"):
             return httpx.Response(200, json=[_pr(n) for n in range(1, 51)])
-        if "/comments" in url_path:
-            seen_comments.append(1)
+        if url_path.endswith("/pulls/comments"):
+            if int(request.url.params.get("page", "1")) > 1:
+                return httpx.Response(200, json=[])
             return httpx.Response(
-                200, json=[{"path": "a.py", "body": f"c{i}"} for i in range(40)]
+                200,
+                json=[
+                    _comment(2000 + i, 1, body=f"c{i}") for i in range(40)
+                ],
             )
         return httpx.Response(404, json={})
 
@@ -185,9 +188,25 @@ def test_caps_max_prs_and_comments() -> None:
     client = _mock_client(handler, caps)
     pulls = list(client.iter_merged_pulls("o", "r"))
     assert len(pulls) == 3
-    for pull in pulls:
-        client.fetch_review_comments("o", "r", pull["number"])
-    assert client.stats.comments_fetched == 100  # 40+40+20, cap enforced
+    comments = list(client.iter_review_comments("o", "r"))
+    assert client.stats.comments_fetched == 40  # one page, no duplication
+    assert len(comments) == 40
+    assert client.stats.stopped_reason != "cap_comments"
+
+
+def test_comment_cap_stops_the_walk() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/comments"):
+            if int(request.url.params.get("page", "1")) > 1:
+                return httpx.Response(200, json=[])
+            return httpx.Response(
+                200, json=[_comment(3000 + i, 1, body=f"c{i}") for i in range(40)]
+            )
+        return httpx.Response(200, json=[])
+
+    client = _mock_client(handler, FetchCaps(max_comments=10))
+    comments = list(client.iter_review_comments("o", "r"))
+    assert len(comments) == 10
     assert client.stats.stopped_reason == "cap_comments"
 
 
@@ -238,9 +257,38 @@ def test_http_error_raises_github_api_error() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _comment(comment_id: int, pull_number: int, *, path: str = "src/a.py",
+             body: str = "c") -> dict:
+    """One repo-wide inline comment (the shape ``GET /pulls/comments`` returns)."""
+    return {
+        "id": comment_id,
+        "path": path,
+        "body": body,
+        "pull_request_url": (
+            f"https://api.github.com/repos/acme/widget/pulls/{pull_number}"
+        ),
+    }
+
+
 def _api_mock(prs: list[dict], comments: dict[int, list[dict]] | None = None):
-    """Build a handler serving the pulls list and per-PR comments."""
+    """Build a handler serving the pulls list and the repo-wide comment stream.
+
+    *comments* maps PR number → that PR's comments (path/body only); the helper
+    adds the ``id`` and ``pull_request_url`` fields the repo-wide endpoint
+    returns, so tests read naturally.
+    """
     comments = comments or {}
+    stream = [
+        _comment(
+            comment_id=1000 + (pr * 100) + index,
+            pull_number=pr,
+            path=str(item.get("path", "")),
+            body=str(item.get("body", "")),
+        )
+        for pr, batch in comments.items()
+        for index, item in enumerate(batch)
+    ]
+    stream.sort(key=lambda c: int(c["id"]), reverse=True)
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/pulls"):
@@ -248,9 +296,11 @@ def _api_mock(prs: list[dict], comments: dict[int, list[dict]] | None = None):
             if page > 1:
                 return httpx.Response(200, json=[])
             return httpx.Response(200, json=prs)
-        for number, batch in comments.items():
-            if f"/pulls/{number}/comments" in request.url.path:
-                return httpx.Response(200, json=batch)
+        if request.url.path.endswith("/pulls/comments"):
+            page = int(request.url.params.get("page", "1"))
+            if page > 1:
+                return httpx.Response(200, json=[])
+            return httpx.Response(200, json=stream)
         return httpx.Response(200, json=[])
 
     return handler
@@ -293,7 +343,10 @@ def test_watermark_incremental_second_run_fetches_only_newer(git_repo) -> None:
 
     def second_handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/pulls"):
-            requested_pages.append(int(request.url.params.get("page", "1")))
+            page = int(request.url.params.get("page", "1"))
+            requested_pages.append(page)
+            if page > 1:
+                return httpx.Response(200, json=[])
             # Server now returns PRs 11 (new) and 10/9 (already mined).
             return httpx.Response(200, json=[_pr(11), _pr(10), _pr(9)])
         return httpx.Response(200, json=[])
@@ -307,19 +360,68 @@ def test_watermark_incremental_second_run_fetches_only_newer(git_repo) -> None:
     assert second is not None
     assert [p.number for p in second.pulls] == [11, 10, 9]  # merged, newest first
     assert second.watermark == 11
-    # The client stopped as soon as it walked below the watermark.
+    # Already-mined PRs are skipped by identity, not by a high-water mark.
     assert second.stats["prs_fetched"] == 1
 
 
-def test_mine_github_no_new_prs_returns_none(git_repo) -> None:
+def test_truncated_run_resumes_and_reaches_the_gap(git_repo, monkeypatch) -> None:
+    """A budget-truncated run must not strand the PRs it never reached.
+
+    The old watermark walk recorded the highest PR number it saw and skipped
+    everything below it on the next run, so the un-reached middle of a
+    truncated range was lost permanently.
+    """
     repo = git_repo()
     run_git(repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
-    handler = _api_mock([_pr(5)])
-    previous = GithubEvidence(owner="acme", repo="widget", watermark=5)
+    all_prs = [_pr(number) for number in range(20, 0, -1)]  # 20..1, newest first
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls"):
+            calls["n"] += 1
+            if calls["n"] > 1:  # one page of 100 is all this fake serves
+                return httpx.Response(200, json=[])
+            return httpx.Response(200, json=all_prs)
+        return httpx.Response(200, json=[])
+
+    # First run: a PR cap of 5 truncates the walk at PR 16.
+    truncated_cfg = SpcConfig(
+        github=GithubConfig(github_max_prs=5)
+    )
+    first = mine_github(
+        repo, truncated_cfg, client_factory=lambda caps: _mock_client(handler, caps)
+    )
+
+    assert first is not None
+    assert [p.number for p in first.pulls] == [20, 19, 18, 17, 16]
+    assert first.stats["stopped_reason"] == "cap_prs"
+
+    # Second run with a full budget must reach the PRs the first run never saw.
+    calls["n"] = 0
+    second = mine_github(
+        repo,
+        SpcConfig(),
+        previous=first,
+        client_factory=lambda caps: _mock_client(handler, caps),
+    )
+    assert second is not None
+    assert {p.number for p in second.pulls} == set(range(1, 21))
+
+
+def test_mine_github_reports_no_new_when_everything_is_stored(git_repo) -> None:
+    repo = git_repo()
+    run_git(repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
+    previous = GithubEvidence(
+        owner="acme", repo="widget", watermark=5,
+        pulls=[PrRecord(number=5, title="PR 5", merged_at="2026-01-02T03:04:05Z")],
+    )
+    outcome: dict = {}
     assert mine_github(
         repo, SpcConfig(), previous=previous,
-        client_factory=lambda caps: _mock_client(handler, caps),
+        client_factory=lambda caps: _mock_client(_api_mock([_pr(5)]), caps),
+        stats_out=outcome,
     ) is None
+    assert outcome["reason"] == "no_new"
 
 
 def test_mine_github_non_github_remote_returns_none(git_repo) -> None:
@@ -697,7 +799,7 @@ def test_budget_exhaustion_keeps_fetched_work(monkeypatch) -> None:
 
 
 def test_mine_github_budget_exhaustion_saves_watermark(git_repo) -> None:
-    """Even a budget-truncated run persists its watermark for the next run."""
+    """Even a budget-truncated run persists what it fetched."""
     repo = git_repo()
     run_git(repo, "remote", "add", "origin", "https://github.com/acme/widget.git")
 
@@ -705,9 +807,8 @@ def test_mine_github_budget_exhaustion_saves_watermark(git_repo) -> None:
         page = int(request.url.params.get("page", "1"))
         return httpx.Response(200, json=[_pr(page * 100 + n) for n in range(50)])
 
-    # Tiny budget via monkeypatched constant: first page (1 call) + a few
-    # comment calls, then the ceiling trips mid-walk.
-    monkey_budget = 4
+    # Tiny budget via monkeypatched constant: the ceiling trips mid-walk.
+    monkey_budget = 2
     import spc.githubapi as githubapi_module
 
     original = githubapi_module.MAX_API_CALLS_PER_RUN
@@ -770,7 +871,7 @@ def test_learn_skip_notice_reflects_api_error(git_repo, monkeypatch) -> None:
 def test_learn_skip_notice_no_new_prs_when_last_run_was_clean(
     git_repo, monkeypatch
 ) -> None:
-    """A clean previous run + nothing new says 'no new merged PRs'."""
+    """Nothing new says so plainly, and names what is already stored."""
     import io
 
     from spc.learn import _skip_reason
@@ -781,13 +882,42 @@ def test_learn_skip_notice_no_new_prs_when_last_run_was_clean(
         repo,
         GithubEvidence(
             owner="acme", repo="widget", watermark=5,
+            pulls=[_pr_record(5, "PR 5")],
             stats={"stopped_reason": "complete"},
         ).to_dict(),
     )
+    previous = load_github_evidence(repo)
     console = Console(file=io.StringIO(), force_terminal=False)
-    reason = _skip_reason(repo, SpcConfig())
+    reason = _skip_reason({"reason": "no_new"}, previous)
     console.print(reason)
-    assert "no new merged PRs since the last run" in console.file.getvalue()  # type: ignore[union-attr]
+    output = console.file.getvalue()  # type: ignore[union-attr]
+    assert "no new merged PRs" in output
+    assert "1 merged PRs already stored" in output
+    assert "rejected us" not in output
+
+
+def test_skip_notice_does_not_trust_a_previous_truncation() -> None:
+    """A stale truncation in the cached stats must not change this run's wording.
+
+    Previously the printed reason was derived from the *previous* run's
+    ``stopped_reason``: one budget-truncated run made every later healthy run
+    claim the API had rejected us.
+    """
+    from spc.learn import _skip_reason
+
+    previous = GithubEvidence(
+        owner="acme", repo="widget", watermark=51095,
+        pulls=[_pr_record(51095, "PR 51095")],
+        stats={"stopped_reason": "budget_exhausted"},
+    )
+    assert "no new merged PRs" in _skip_reason({"reason": "no_new"}, previous)
+    assert "rejected us" in _skip_reason({"reason": "api_error"}, previous)
+
+
+def test_skip_notice_reports_a_non_github_remote() -> None:
+    from spc.learn import _skip_reason
+
+    assert "not a github remote" in _skip_reason({"reason": "no_remote"}, None)
 
 
 def test_scrub_drops_lines_quoting_raw_comments() -> None:

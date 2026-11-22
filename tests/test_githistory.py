@@ -44,6 +44,30 @@ def test_mine_hotspots_bug_classes_and_co_change(git_repo) -> None:
     assert any("tests/" in d for d in evidence.test_dirs)
 
 
+def test_bug_class_file_clusters_are_per_keyword(git_repo) -> None:
+    """One hotfix must not inherit the file clusters of hundreds of fixes.
+
+    ``top_files`` was accumulated in a single Counter shared by every keyword,
+    so ``hotfix (count 1)`` reported the same files as ``fix (count 5)`` and the
+    synthesis prompt presented one commit's files as a trend.
+    """
+    repo = git_repo(
+        {"src/auth.py": "def login(): ...\n", "deploy/ops.py": "x = 1\n"},
+        later_commits=[
+            ("fix: injection in auth", {"src/auth.py": "def login(): return 1\n"}),
+            ("fix: auth guard", {"src/auth.py": "def login(): return 2\n"}),
+            ("fix: auth token", {"src/auth.py": "def login(): return 3\n"}),
+            ("hotfix: urgent deploy patch", {"deploy/ops.py": "x = 2\n"}),
+        ],
+    )
+    evidence = mine_git_history(repo, max_commits=100)
+    assert evidence is not None
+    by_keyword = {entry["keyword"]: entry for entry in evidence.bug_classes}
+
+    assert by_keyword["fix"]["top_files"][0] == "src/auth.py"
+    assert by_keyword["hotfix"]["top_files"] == ["deploy/ops.py"]
+
+
 def test_mine_excludes_lockfiles_and_vendored(git_repo) -> None:
     repo = git_repo(
         {"src/a.py": "a = 1\n", "package-lock.json": "{}\n", "vendor/lib.py": "x\n"},

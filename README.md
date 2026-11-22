@@ -180,9 +180,10 @@ If `origin` points at GitHub, `spc learn` also mines **merged PRs and inline
 review comments** and distills them into your profile: recurring peer-review
 themes plus explicit repo **rules** a diff can be checked against (ordering
 requirements, forbidden patterns, required process — e.g. migration before
-code). Watermark-incremental: re-runs fetch only PRs newer than the last run.
-Rate-limit aware, capped per run, and strictly fail-soft — any GitHub error
-downgrades to git-only learning with a one-line notice. Only synthesized
+code). Incremental by identity: re-runs skip PRs already stored, so a run that
+hit a cap resumes where it stopped instead of stranding the range it never
+reached. Rate-limit aware, capped per run, and strictly fail-soft — any GitHub
+error downgrades to git-only learning with a one-line notice. Only synthesized
 **themes** enter `.spc/profile.md`; raw comments stay in the gitignored
 `.spc/evidence.json`.
 
@@ -194,6 +195,12 @@ earlier commit touched (a *hypothesis*, never a claim), fixes that touched no
 test, and files that repeatedly change together. Profile lines derived from them
 are marked `[observed]` or `[hypothesis]` and the model is told to treat a "fix"
 keyword as a keyword, not a root cause.
+
+**Change cascades** lead the profile when the evidence has them: one earlier
+change that provoked several follow-up fixes, with the count and the files that
+needed follow-up. It is the one claim here that `git log` cannot answer cheaply
+— it takes per-commit diff overlap across the whole window — so the synthesis
+prompt gives it its own section and asks for it first.
 
 Schema, caps, and the privacy/performance reasoning: [docs/git-evidence.md](docs/git-evidence.md).
 

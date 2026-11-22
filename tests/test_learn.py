@@ -198,6 +198,23 @@ def test_synthesis_system_bans_generic_advice() -> None:
         assert section in _SYNTHESIS_SYSTEM
 
 
+def test_synthesis_system_forbids_collapsing_events_into_categories() -> None:
+    """Historical events must name files, not flatten into a category summary.
+
+    The live transformers profile said "reverts are most frequent for
+    documentation, CI workflows, and supporting utility scripts" while the
+    evidence listed a revert of cache_utils.py + masking_utils.py and another
+    of modeling_utils.py + fsdp.py — the file couplings, which are the part a
+    reader cannot re-derive, were gone.
+    """
+    from spc.profile import _SYNTHESIS_SYSTEM
+
+    assert "NEVER collapse distinct events into a category summary" in _SYNTHESIS_SYSTEM
+    assert "Name the files" in _SYNTHESIS_SYSTEM
+    assert "cache_utils.py" in _SYNTHESIS_SYSTEM  # the concrete counter-example
+    assert "Historical events" in _SYNTHESIS_SYSTEM
+
+
 def test_cluster_system_asks_for_checkable_rules() -> None:
     """Clustering must surface repo-specific rules, not just topic counts."""
     from spc.githubhistory import _CLUSTER_SYSTEM

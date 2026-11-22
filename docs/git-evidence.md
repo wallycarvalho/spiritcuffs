@@ -120,6 +120,58 @@ that would guess (e.g. "this migration was probably forgotten") are deliberately
 not mined: an invented explanation is worse than no explanation, because the
 profile reads as authoritative.
 
+## What the synthesis prompt actually receives
+
+A 2 000-commit window on a large repository yields far more relationships than
+one prompt should carry (117 on transformers), so the renderer spends its budget
+by explanatory value, not by detector order:
+
+- **Change cascades get their own section, first.** Relationships are grouped by
+  the earlier commit they follow; a parent with ≥2 follow-ups is a cascade and
+  is stated with its count and the files that needed follow-up. This is the one
+  claim a reader cannot cheaply re-derive (`git log --oneline` will not tell you
+  that a cache rename cost six later fixes).
+- **Blind reverts collapse to one line.** A revert whose target lies outside the
+  scanned window and which carried no files says only "something was undone";
+  41 such entries once consumed over half the section budget.
+- **Observed evidence outranks hypotheses.** Reverts and co-changes are facts
+  git asserts; a "this fix follows that change" link is a guess from file overlap
+  in time. Ranked the other way, verbose hypotheses crowded out every observed
+  revert, and the synthesis — reading the absence as a fact — wrote that the
+  repo's reverts carry no file details. That sentence was false and traceable to
+  the ordering.
+- **`co_change` lines name the file pair.** The pair is the finding — a line
+  with only a commit count discards it — and a pair seen in both directions is
+  printed once.
+- **Event lines are composed from structured fields, not the stored note.** The
+  note repeats subject and files; rendering both truncated every subject twice
+  and made a hypothesis line longer than an observed one.
+- **Excerpts go to cascade parents and their fixes first.** Citation order is
+  detector order, so reverts are cited before any fix; spending the 60 excerpt
+  slots that way left the cascades undocumented.
+
+Measured effect on the transformers profile: distinct file paths named rose
+from 3 to 15, and the cache-rename cascade appears as the profile's first
+bullet with its count verbatim.
+
+## GitHub mining is incremental by identity
+
+Merged PRs are skipped by number, not by a high-water mark. This matters
+because a run can stop early — `github_max_prs`, `github_max_comments`, the
+per-run API-call ceiling, or a rate limit — and a high-water mark makes
+truncation permanent: it records the newest PR number it saw and every later
+run skips everything below it, so the un-reached middle of that range is never
+mined again. Skipping by identity instead records exactly what was stored; the
+next run walks the same newest-first order, skips those PRs, and continues
+into the range the truncated run never reached. Measured on transformers: a
+truncated run stored 147 of 194 merged PRs in a range and stranded the rest;
+the identity walk recovered all of them across two runs.
+
+Comments are fetched from the repo-wide `/pulls/comments` endpoint (100 per
+call) and filtered to the PRs just mined, rather than one call per PR. At 1
+call per PR a 60-call budget covered 27 comments; at 100 per call it covers
+1000, which is what makes `github_max_comments` reachable at all.
+
 ## Caps and why they exist
 
 | Constant | Value | Rationale |
