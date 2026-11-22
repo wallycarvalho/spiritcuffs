@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "spiritcuffs"
-version = "0.3.0"
+version = "0.4.0"
 description = "A lightweight local tool that reviews your code with an LLM before every git push."
 readme = "README.md"
 requires-python = ">=3.11"
